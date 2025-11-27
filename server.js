@@ -800,17 +800,19 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
     // Compute texture features (edge variance)
     const textureScore = edgeMean / 30; // Normalize edge density as texture indicator
     
-    // FAST SEMANTIC FEATURE DETECTION - Only critical features for speed
+    // ENABLE ALL SEMANTIC FEATURES - Critical for accurate detection
     const detectedFeatures = {
       hasScreen: detectScreen(image),
-      circularElements: 0, // Skip slow circular detection
+      circularElements: detectCircularElements(image),
       reflectivity: detectReflectivity(image),
-      isMetallic: false, // Skip for speed
-      hasTransparency: false, // Skip for speed
-      hasText: false, // Skip for speed
-      uniformity: 0.5, // Default
-      hasCompartments: false // Skip for speed
+      isMetallic: detectMetallicSurface(image),
+      hasTransparency: detectTransparency(image),
+      hasText: detectTextRegions(image),
+      uniformity: detectColorUniformity(image),
+      hasCompartments: detectCompartments(image)
     };
+
+    console.log('🔍 Detected Features:', detectedFeatures);
 
     // Compare products: PRIORITIZE shape (50%), size (25%), texture (15%), color only (10%)
     let best = null;
@@ -971,22 +973,37 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         }
       }
 
-      // Combine refBestScore and heuristicScore - balance both for multi-angle accuracy
-      // Reference matching helps with angles, but heuristic ensures shape/size correctness
+      // Combine refBestScore and heuristicScore - STRICT VALIDATION
+      // Reference matching helps with angles, but MUST NOT override clear heuristic mismatches
       let finalScore = 0;
-      if (refBestScore > 0.85) {
-        finalScore = 0.75 * refBestScore + 0.25 * heuristicScore; // Strong ref + shape validation
-      } else if (refBestScore > 0.65) {
-        finalScore = 0.60 * refBestScore + 0.40 * heuristicScore; // Balanced matching
+      
+      // CRITICAL: If semantic features strongly mismatch, reject even high ref scores
+      const hasStrongFeatureMismatch = (
+        (p.detectableFeatures?.hasScreen && !detectedFeatures.hasScreen) ||
+        (!p.detectableFeatures?.hasScreen && detectedFeatures.hasScreen)
+      );
+      
+      if (hasStrongFeatureMismatch) {
+        // Screen presence is a deal-breaker - reduce reference weight drastically
+        finalScore = 0.20 * refBestScore + 0.80 * heuristicScore;
+        console.log(`⚠️  ${p.id}: Screen mismatch! Ref=${refBestScore.toFixed(2)}, Heuristic=${heuristicScore.toFixed(2)}, Final=${finalScore.toFixed(2)}`);
+      } else if (refBestScore > 0.85 && heuristicScore > 0.40) {
+        // Strong ref match AND reasonable heuristic - trust it
+        finalScore = 0.70 * refBestScore + 0.30 * heuristicScore;
+      } else if (refBestScore > 0.65 && heuristicScore > 0.35) {
+        // Good ref match with decent heuristic - balanced
+        finalScore = 0.50 * refBestScore + 0.50 * heuristicScore;
       } else if (refBestScore > 0) {
-        finalScore = 0.40 * refBestScore + 0.60 * heuristicScore; // Heuristic dominates for weak refs
+        // Weak ref match - heuristic dominates
+        finalScore = 0.30 * refBestScore + 0.70 * heuristicScore;
       } else {
-        finalScore = heuristicScore; // No refs, use shape/size/texture only
+        // No refs - pure heuristic
+        finalScore = heuristicScore;
       }
 
       if (finalScore > bestScore) {
         bestScore = finalScore;
-        best = { product: p, refScore: refBestScore };
+        best = { product: p, refScore: refBestScore, heuristicScore: heuristicScore };
       }
 
       // push diagnostics for this product
@@ -1009,6 +1026,16 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
     const confidence = Math.min(0.99, bestScore);
     const bp = best?.product;
     
+    // Sort diagnostics by score for logging
+    diagnostics.sort((a, b) => b.finalScore - a.finalScore);
+    
+    // Always log top 3 candidates for debugging
+    console.log('\n🏆 Top 3 Detection Candidates:');
+    diagnostics.slice(0, 3).forEach((d, i) => {
+      console.log(`  ${i+1}. ${d.name} (${d.id}): Final=${(d.finalScore*100).toFixed(1)}% [Heuristic=${(d.heuristicScore*100).toFixed(1)}% Ref=${(d.refBestScore*100).toFixed(1)}%]`);
+      console.log(`     Shape=${(d.shapeMatch*100).toFixed(0)}% Features=${(d.featureMatch*100).toFixed(0)}% Size=${(d.sizeMatch*100).toFixed(0)}%`);
+    });
+    
     // Reject if:
     // 1. No match found
     // 2. Confidence below 80%
@@ -1026,7 +1053,7 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
           reason: !best ? 'no match' : confidence < 0.80 ? 'low confidence' : 'empty frame',
           bestScore: bestScore.toFixed(3),
           edgeMean: edgeMean.toFixed(2),
-          topMatches: diagnostics.sort((a, b) => b.finalScore - a.finalScore).slice(0, 3)
+          topMatches: diagnostics.slice(0, 3)
         };
       }
       console.log('❌ No product detected (confidence:', (confidence * 100).toFixed(1) + '%)');

@@ -17,14 +17,6 @@ const btnLoadCatalog = document.getElementById('btnLoadCatalog');
 const autoScanEl = document.getElementById('autoScan');
 const cameraStatusEl = document.getElementById('camera-status');
 
-// Add overlay canvas to camera container
-document.querySelector('.camera-container').appendChild(overlayCanvas);
-overlayCanvas.style.position = 'absolute';
-overlayCanvas.style.top = '0';
-overlayCanvas.style.left = '0';
-overlayCanvas.style.pointerEvents = 'none';
-overlayCanvas.style.zIndex = '10';
-
 // State
 let stream = null;
 let autoScan = false;
@@ -41,12 +33,25 @@ let lastDetectionTime = 0;
 let trackedProducts = []; // [{ id, signature, bbox, lastSeen }]
 let currentFrameSignature = null;
 
+// Initialize overlay canvas after DOM is ready
+function initOverlayCanvas() {
+  const cameraContainer = document.querySelector('.camera-container');
+  if (cameraContainer && !cameraContainer.contains(overlayCanvas)) {
+    cameraContainer.appendChild(overlayCanvas);
+    overlayCanvas.style.position = 'absolute';
+    overlayCanvas.style.top = '0';
+    overlayCanvas.style.left = '0';
+    overlayCanvas.style.pointerEvents = 'none';
+    overlayCanvas.style.zIndex = '10';
+    console.log('✅ Overlay canvas initialized');
+  }
+}
+
 // Event Listeners
 btnStart.addEventListener('click', startCamera);
 btnCapture.addEventListener('click', captureAndDetect);
 btnStop.addEventListener('click', stopCamera);
-uploadArea.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', handleFileUpload);
+autoScanEl.addEventListener('change', toggleAutoScan);
 btnLoadCatalog.addEventListener('click', loadCatalog);
 autoScanEl.addEventListener('change', toggleAutoScan);
 
@@ -104,6 +109,7 @@ async function startCamera() {
     video.srcObject = stream;
     video.addEventListener('loadedmetadata', () => {
       console.log(`📷 Camera started: ${video.videoWidth}x${video.videoHeight}`);
+      initOverlayCanvas(); // Initialize overlay when camera is ready
     });
 
     btnStart.disabled = true;
@@ -618,6 +624,7 @@ function signaturesMatch(sig1, sig2, threshold = 25) {
 // Catalog Functions
 async function loadCatalog() {
   try {
+    console.log('📚 Loading catalog...');
     btnLoadCatalog.disabled = true;
     btnLoadCatalog.textContent = 'Loading...';
 
@@ -628,9 +635,11 @@ async function loadCatalog() {
       throw new Error('Failed to load catalog');
     }
 
+    console.log(`✅ Loaded ${data.products.length} products`);
     displayCatalog(data.products);
     btnLoadCatalog.textContent = 'Reload Catalog';
   } catch (err) {
+    console.error('❌ Catalog load error:', err);
     alert('❌ Could not load catalog: ' + err.message);
     btnLoadCatalog.textContent = 'Load Catalog';
   } finally {
@@ -639,6 +648,7 @@ async function loadCatalog() {
 }
 
 function displayCatalog(products) {
+  console.log('🎨 Displaying catalog with', products.length, 'products');
   catalogEl.innerHTML = '';
 
   products.forEach(product => {
@@ -684,6 +694,7 @@ function updateStats(data, responseTime) {
 
 // Initialize
 console.log('🚀 Intel Edge Insights Demo initialized');
+initOverlayCanvas(); // Try to initialize overlay canvas immediately
 loadCatalog(); // Auto-load catalog on page load
 
 // Check camera availability on load
