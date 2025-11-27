@@ -1,0 +1,1142 @@
+const express = require('express');
+const multer = require('multer');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const Jimp = require('jimp');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+// Upload configuration
+const storage = multer.diskStorage({
+  destination: 'uploads/',
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+const upload = multer({ storage });
+
+// Product database (loaded from catalog)
+let productDB = [];
+// Reference signatures loaded from `references/` or `catalog[].references`
+const referenceSignatures = {}; // productId -> [{ path, ahash, hist }]
+
+// Helpers for signatures
+function xorCount(a, b) {
+  // a,b are binary strings of equal length
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) c++;
+  return c;
+}
+
+async function computeAHashFromJimp(image) {
+  // average hash (aHash) 8x8
+  const small = image.clone().resize(8, 8).greyscale();
+  const data = small.bitmap.data;
+  let sum = 0;
+  const vals = [];
+  for (let i = 0; i < data.length; i += 4) {
+    const v = data[i];
+    vals.push(v);
+    sum += v;
+  }
+  const avg = sum / vals.length;
+  let hash = '';
+  for (const v of vals) hash += (v >= avg) ? '1' : '0';
+  return hash; // 64-char string
+}
+
+// pHash - More robust to lighting and minor angle changes
+async function computePHashFromJimp(image) {
+  const size = 32;
+  const small = image.clone().resize(size, size).greyscale();
+  const data = small.bitmap.data;
+  
+  // Extract luminance values
+  const vals = [];
+  for (let i = 0; i < data.length; i += 4) {
+    vals.push(data[i]);
+  }
+  
+  // Simple DCT-like transform (use median instead of full DCT for performance)
+  const median = vals.slice().sort((a, b) => a - b)[Math.floor(vals.length / 2)];
+  let hash = '';
+  for (const v of vals) {
+    hash += (v >= median) ? '1' : '0';
+  }
+  return hash.substring(0, 64); // 64-bit hash
+}
+
+// Structural similarity for shapes
+async function computeStructuralHash(image) {
+  const small = image.clone().resize(16, 16).greyscale();
+  const data = small.bitmap.data;
+  
+  // Extract edge patterns
+  const edges = [];
+  for (let y = 1; y < 15; y++) {
+    for (let x = 1; x < 15; x++) {
+      const idx = (y * 16 + x) * 4;
+      const center = data[idx];
+      const top = data[((y-1) * 16 + x) * 4];
+      const bottom = data[((y+1) * 16 + x) * 4];
+      const left = data[(y * 16 + (x-1)) * 4];
+      const right = data[(y * 16 + (x+1)) * 4];
+      
+      const gradient = Math.abs(center - top) + Math.abs(center - bottom) + 
+                      Math.abs(center - left) + Math.abs(center - right);
+      edges.push(gradient);
+    }
+  }
+  
+  const median = edges.slice().sort((a, b) => a - b)[Math.floor(edges.length / 2)];
+  let hash = '';
+  for (const e of edges) {
+    hash += (e >= median) ? '1' : '0';
+  }
+  return hash.substring(0, 64);
+}
+
+function computeColorHistogramFromJimp(image) {
+  // simple 4x4x4 quantized histogram -> 64 bins
+  const small = image.clone().resize(64, 64);
+  const data = small.bitmap.data;
+  const bins = new Array(64).fill(0);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const ri = Math.floor(r / 64);
+    const gi = Math.floor(g / 64);
+    const bi = Math.floor(b / 64);
+    const idx = ri * 16 + gi * 4 + bi;
+    bins[idx]++;
+  }
+  const total = bins.reduce((s, v) => s + v, 0) || 1;
+  return bins.map(v => v / total);
+}
+
+function histIntersection(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.min(a[i], b[i]);
+  return sum; // 0..1
+}
+
+// Human detection: detect skin tones and human-like features WITH BOUNDING BOX
+function detectHuman(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  let skinPixels = 0;
+  let totalPixels = 0;
+  let faceRegionPixels = 0;
+  
+  // Track bounding box of skin pixels
+  let minX = w, maxX = 0, minY = h, maxY = 0;
+  
+  // Skin tone detection ranges (RGB)
+  const skinRanges = [
+    { rMin: 95, rMax: 255, gMin: 40, gMax: 170, bMin: 20, bMax: 130 },   // Light to medium skin
+    { rMin: 45, rMax: 100, gMin: 28, gMax: 65, bMin: 20, bMax: 55 }      // Darker skin tones
+  ];
+  
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) << 2;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      
+      totalPixels++;
+      
+      // Check if pixel matches skin tone ranges
+      let isSkin = false;
+      for (const range of skinRanges) {
+        if (r >= range.rMin && r <= range.rMax &&
+            g >= range.gMin && g <= range.gMax &&
+            b >= range.bMin && b <= range.bMax) {
+          if (r > g && g >= b) {
+            isSkin = true;
+            break;
+          }
+        }
+      }
+      
+      if (isSkin) {
+        skinPixels++;
+        // Update bounding box
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        
+        if (y < h / 3) {
+          faceRegionPixels++;
+        }
+      }
+    }
+  }
+  
+  const skinRatio = skinPixels / totalPixels;
+  const faceRegionRatio = faceRegionPixels / (totalPixels / 3);
+  const isHuman = skinRatio > 0.15 || faceRegionRatio > 0.25;
+  
+  // Calculate normalized bounding box
+  let boundingBox = { x: 0.15, y: 0.1, width: 0.7, height: 0.8 }; // default
+  
+  if (isHuman && skinPixels > 0) {
+    // Add padding (10% on each side)
+    const padding = 0.1;
+    const boxW = maxX - minX;
+    const boxH = maxY - minY;
+    
+    minX = Math.max(0, minX - boxW * padding);
+    maxX = Math.min(w, maxX + boxW * padding);
+    minY = Math.max(0, minY - boxH * padding);
+    maxY = Math.min(h, maxY + boxH * padding);
+    
+    boundingBox = {
+      x: minX / w,
+      y: minY / h,
+      width: (maxX - minX) / w,
+      height: (maxY - minY) / h
+    };
+  }
+  
+  return {
+    isHuman,
+    skinRatio: Number(skinRatio.toFixed(3)),
+    faceRegionRatio: Number(faceRegionRatio.toFixed(3)),
+    boundingBox
+  };
+}
+
+// Detect product location in image using edge detection and color clustering
+function detectProductLocation(image, excludeHumanBox = null) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  // Create edge map
+  const edges = new Array(w * h).fill(0);
+  
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = (y * w + x) << 2;
+      
+      // Simple Sobel-like edge detection
+      let gx = 0, gy = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const pidx = ((y + dy) * w + (x + dx)) << 2;
+          const intensity = (data[pidx] + data[pidx + 1] + data[pidx + 2]) / 3;
+          gx += intensity * dx;
+          gy += intensity * dy;
+        }
+      }
+      
+      edges[y * w + x] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  
+  // Find regions with high edge density (potential products)
+  const gridSize = 16; // divide image into grid
+  const gridW = Math.ceil(w / gridSize);
+  const gridH = Math.ceil(h / gridSize);
+  const gridScores = [];
+  
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      let edgeSum = 0;
+      let count = 0;
+      
+      for (let y = gy * gridSize; y < Math.min((gy + 1) * gridSize, h); y++) {
+        for (let x = gx * gridSize; x < Math.min((gx + 1) * gridSize, w); x++) {
+          // Skip if in human box
+          if (excludeHumanBox) {
+            const normX = x / w;
+            const normY = y / h;
+            if (normX >= excludeHumanBox.x && normX <= excludeHumanBox.x + excludeHumanBox.width &&
+                normY >= excludeHumanBox.y && normY <= excludeHumanBox.y + excludeHumanBox.height) {
+              continue;
+            }
+          }
+          
+          edgeSum += edges[y * w + x];
+          count++;
+        }
+      }
+      
+      if (count > 0) {
+        gridScores.push({
+          x: gx * gridSize,
+          y: gy * gridSize,
+          score: edgeSum / count,
+          gx, gy
+        });
+      }
+    }
+  }
+  
+  // Find top region (product likely location)
+  gridScores.sort((a, b) => b.score - a.score);
+  
+  if (gridScores.length === 0) {
+    return { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }; // default center box
+  }
+  
+  // Take top region and expand to neighboring high-score regions
+  const topRegion = gridScores[0];
+  let minGx = topRegion.gx, maxGx = topRegion.gx;
+  let minGy = topRegion.gy, maxGy = topRegion.gy;
+  
+  // Include adjacent high-score regions (>50% of top score)
+  const threshold = topRegion.score * 0.5;
+  for (const region of gridScores.slice(1, 10)) {
+    if (region.score < threshold) break;
+    
+    if (Math.abs(region.gx - topRegion.gx) <= 2 && Math.abs(region.gy - topRegion.gy) <= 2) {
+      minGx = Math.min(minGx, region.gx);
+      maxGx = Math.max(maxGx, region.gx);
+      minGy = Math.min(minGy, region.gy);
+      maxGy = Math.max(maxGy, region.gy);
+    }
+  }
+  
+  // Convert to normalized coordinates with padding
+  const padding = 0.05;
+  const x = Math.max(0, (minGx * gridSize) / w - padding);
+  const y = Math.max(0, (minGy * gridSize) / h - padding);
+  const width = Math.min(1 - x, ((maxGx + 1) * gridSize) / w - x + padding);
+  const height = Math.min(1 - y, ((maxGy + 1) * gridSize) / h - y + padding);
+  
+  return { x, y, width, height };
+}
+
+// SEMANTIC FEATURE DETECTION - Detect object-specific features
+function detectSemanticFeatures(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  const features = {};
+  
+  // 1. SCREEN DETECTION - Look for bright rectangular region (smartphone, smartwatch)
+  features.hasScreen = detectScreen(image);
+  
+  // 2. CIRCULAR ELEMENTS - Cameras, lenses, bottle caps, buttons
+  features.circularElements = detectCircularElements(image);
+  
+  // 3. REFLECTIVITY - Glossy surfaces (glass, metal, plastic)
+  features.reflectivity = detectReflectivity(image);
+  
+  // 4. METALLIC SURFACE - Brushed/polished metal
+  features.isMetallic = detectMetallicSurface(image);
+  
+  // 5. TRANSPARENT/GLASS - Bottles, glasses
+  features.hasTransparency = detectTransparency(image);
+  
+  // 6. TEXT/LABELS - Packaging with visible text
+  features.hasText = detectTextRegions(image);
+  
+  // 7. UNIFORM COLOR REGIONS - Solid color products
+  features.uniformity = detectColorUniformity(image);
+  
+  // 8. MULTI-COMPARTMENT - Lunch boxes, cases
+  features.hasCompartments = detectCompartments(image);
+  
+  return features;
+}
+
+// Detect screen presence (bright rectangular region)
+function detectScreen(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  let brightPixels = 0;
+  let totalPixels = w * h;
+  
+  // Check for concentrated brightness in center region
+  for (let y = Math.floor(h * 0.2); y < h * 0.8; y++) {
+    for (let x = Math.floor(w * 0.2); x < w * 0.8; x++) {
+      const idx = (y * w + x) * 4;
+      const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+      if (avg > 180) brightPixels++; // Bright pixel threshold
+    }
+  }
+  
+  const brightRatio = brightPixels / (totalPixels * 0.36); // 0.36 = center region
+  return brightRatio > 0.15; // 15% of center is bright
+}
+
+// Detect circular elements using edge detection
+function detectCircularElements(image) {
+  const gray = image.clone().greyscale();
+  const data = gray.bitmap.data;
+  const w = gray.bitmap.width;
+  const h = gray.bitmap.height;
+  
+  let circularScore = 0;
+  const samplePoints = 20;
+  
+  // Sample random points and check for circular patterns
+  for (let i = 0; i < samplePoints; i++) {
+    const cx = Math.floor(Math.random() * (w - 20) + 10);
+    const cy = Math.floor(Math.random() * (h - 20) + 10);
+    
+    // Check if edges form circular pattern at this point
+    let edgeCount = 0;
+    for (let r = 3; r < 10; r++) {
+      for (let theta = 0; theta < 360; theta += 45) {
+        const rad = theta * Math.PI / 180;
+        const px = Math.floor(cx + r * Math.cos(rad));
+        const py = Math.floor(cy + r * Math.sin(rad));
+        
+        if (px >= 0 && px < w && py >= 0 && py < h) {
+          const idx = (py * w + px) * 4;
+          const curr = data[idx];
+          const center = data[(cy * w + cx) * 4];
+          if (Math.abs(curr - center) > 30) edgeCount++;
+        }
+      }
+    }
+    if (edgeCount > 20) circularScore++;
+  }
+  
+  return circularScore / samplePoints;
+}
+
+// Detect reflective/glossy surfaces
+function detectReflectivity(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  let highlights = 0;
+  let shadows = 0;
+  let totalPixels = w * h;
+  
+  for (let i = 0; i < data.length; i += 4) {
+    const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+    if (avg > 220) highlights++; // Very bright spots
+    if (avg < 40) shadows++; // Dark areas
+  }
+  
+  const contrast = (highlights + shadows) / totalPixels;
+  return contrast > 0.05; // High contrast indicates glossy surface
+}
+
+// Detect metallic surfaces (brushed/polished metal)
+function detectMetallicSurface(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  let metallicPixels = 0;
+  let totalPixels = w * h;
+  
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i+1];
+    const b = data[i+2];
+    
+    // Metallic colors: silver/gray with low saturation
+    const avg = (r + g + b) / 3;
+    const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+    
+    if (avg > 100 && avg < 220 && saturation < 30) {
+      metallicPixels++;
+    }
+  }
+  
+  return (metallicPixels / totalPixels) > 0.30; // 30% metallic-looking
+}
+
+// Detect transparency/glass
+function detectTransparency(image) {
+  const data = image.bitmap.data;
+  const w = image.bitmap.width;
+  const h = image.bitmap.height;
+  
+  // Look for edges with background bleed-through
+  let transparentRegions = 0;
+  
+  for (let y = 10; y < h - 10; y += 5) {
+    for (let x = 10; x < w - 10; x += 5) {
+      const idx = (y * w + x) * 4;
+      const r = data[idx];
+      const g = data[idx+1];
+      const b = data[idx+2];
+      
+      // Check neighbors for color variation (background visible through object)
+      const idx2 = ((y+5) * w + (x+5)) * 4;
+      const r2 = data[idx2];
+      const g2 = data[idx2+1];
+      const b2 = data[idx2+2];
+      
+      const diff = Math.abs(r-r2) + Math.abs(g-g2) + Math.abs(b-b2);
+      if (diff > 50 && diff < 150) transparentRegions++;
+    }
+  }
+  
+  return transparentRegions > 10;
+}
+
+// Detect text regions (packaging labels)
+function detectTextRegions(image) {
+  const gray = image.clone().greyscale();
+  const data = gray.bitmap.data;
+  const w = gray.bitmap.width;
+  const h = gray.bitmap.height;
+  
+  let edgePatterns = 0;
+  
+  // Look for horizontal/vertical line patterns typical of text
+  for (let y = 5; y < h - 5; y += 3) {
+    let horizontalEdges = 0;
+    for (let x = 5; x < w - 5; x++) {
+      const idx = (y * w + x) * 4;
+      const curr = data[idx];
+      const left = data[(y * w + (x-1)) * 4];
+      const right = data[(y * w + (x+1)) * 4];
+      
+      if (Math.abs(curr - left) > 40 || Math.abs(curr - right) > 40) {
+        horizontalEdges++;
+      }
+    }
+    if (horizontalEdges > w * 0.1) edgePatterns++;
+  }
+  
+  return edgePatterns > 5;
+}
+
+// Detect color uniformity
+function detectColorUniformity(image) {
+  const data = image.bitmap.data;
+  let rSum = 0, gSum = 0, bSum = 0;
+  let totalPixels = data.length / 4;
+  
+  for (let i = 0; i < data.length; i += 4) {
+    rSum += data[i];
+    gSum += data[i+1];
+    bSum += data[i+2];
+  }
+  
+  const avgR = rSum / totalPixels;
+  const avgG = gSum / totalPixels;
+  const avgB = bSum / totalPixels;
+  
+  let variance = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const dr = data[i] - avgR;
+    const dg = data[i+1] - avgG;
+    const db = data[i+2] - avgB;
+    variance += (dr*dr + dg*dg + db*db);
+  }
+  
+  variance /= totalPixels;
+  return 1 - Math.min(variance / 10000, 1); // Normalize to 0-1
+}
+
+// Detect compartments (lunch boxes, cases)
+function detectCompartments(image) {
+  const edges = image.clone().greyscale();
+  const data = edges.bitmap.data;
+  const w = edges.bitmap.width;
+  const h = edges.bitmap.height;
+  
+  let gridLines = 0;
+  
+  // Look for internal dividing lines
+  for (let y = Math.floor(h * 0.3); y < h * 0.7; y += 10) {
+    let verticalLine = 0;
+    for (let x = 1; x < w - 1; x++) {
+      const idx = (y * w + x) * 4;
+      const top = data[((y-1) * w + x) * 4];
+      const bottom = data[((y+1) * w + x) * 4];
+      if (Math.abs(data[idx] - top) > 50 && Math.abs(data[idx] - bottom) > 50) {
+        verticalLine++;
+      }
+    }
+    if (verticalLine > w * 0.4) gridLines++;
+  }
+  
+  return gridLines > 1;
+}
+
+async function loadReferenceSignatures() {
+  // Build reference signatures from productDB references array or from references/<productId>/ folder
+  for (const p of productDB) {
+    const pid = p.id || p.name.replace(/\s+/g, '_').toLowerCase();
+    const refs = p.references && p.references.length ? p.references : [];
+    const list = [];
+    // if references empty, check folder
+    if (refs.length === 0) {
+      const dir = path.join(__dirname, 'references', pid);
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter(f => /\.jpe?g|\.png$/i.test(f));
+        for (const f of files) refs.push(path.join('references', pid, f));
+      }
+    }
+
+    for (const rel of refs) {
+      try {
+        const refPath = path.isAbsolute(rel) ? rel : path.join(__dirname, rel);
+        if (!fs.existsSync(refPath)) continue;
+        const img = await Jimp.read(refPath);
+        const ahash = await computeAHashFromJimp(img);
+        const phash = await computePHashFromJimp(img);
+        const shash = await computeStructuralHash(img);
+        const hist = computeColorHistogramFromJimp(img);
+        list.push({ path: refPath, ahash, phash, shash, hist });
+      } catch (err) {
+        console.warn('Could not load reference', rel, err.message);
+      }
+    }
+
+    if (list.length) referenceSignatures[pid] = list;
+  }
+  console.log('✓ Loaded reference signatures for', Object.keys(referenceSignatures).length, 'products');
+}
+
+// Load product catalog
+function loadProductCatalog() {
+  try {
+    const catalogPath = path.join(__dirname, 'catalog', 'products.json');
+    const rawData = fs.readFileSync(catalogPath, 'utf8');
+    productDB = JSON.parse(rawData);
+    console.log(`✓ Loaded ${productDB.length} products from catalog`);
+  } catch (err) {
+    console.log('⚠ Warning: Could not load product catalog. Using default products.');
+    productDB = [
+      {
+        id: 'p1',
+        name: 'Coffee Mug',
+        category: 'Beverages',
+        type: 'Ceramic Mug',
+        price: 12.99,
+        characteristics: ['ceramic', 'cylindrical', 'handle'],
+        shape: 'cylinder',
+        size: 'medium',
+        color: 'white',
+        texture: 'smooth',
+        packaging: 'box',
+        uniqueFeatures: ['dishwasher safe', 'heat resistant'],
+        location: 'aisle-5'
+      },
+      {
+        id: 'p2',
+        name: 'Protein Shake',
+        category: 'Beverages',
+        type: 'Protein Drink',
+        price: 8.99,
+        characteristics: ['bottle', 'liquid', 'plastic'],
+        shape: 'rectangular',
+        size: 'small',
+        color: 'brown',
+        texture: 'glossy',
+        packaging: 'plastic bottle',
+        uniqueFeatures: ['high protein', 'low sugar'],
+        location: 'aisle-3'
+      },
+      {
+        id: 'p3',
+        name: 'Chocolate Bar',
+        category: 'Snacks',
+        type: 'Candy',
+        price: 2.99,
+        characteristics: ['rectangular', 'wrapped', 'foil'],
+        shape: 'rectangular',
+        size: 'small',
+        color: 'brown',
+        texture: 'ridged',
+        packaging: 'foil wrapper',
+        uniqueFeatures: ['70% cocoa', 'organic'],
+        location: 'aisle-4'
+      }
+    ];
+  }
+}
+
+// Generate mock inference response
+/**
+ * Analyze image and attempt to match a product from the catalog.
+ * Uses Jimp to compute a simple edge-density heuristic and color/aspect heuristics
+ * Prioritizes accuracy: if no clear product evidence is found, returns empty detections.
+ */
+async function analyzeImageAndDetect(filePath, filename, options = {}) {
+  try {
+    const image = await Jimp.read(filePath);
+
+    // Resize for FAST processing - prioritize speed
+    const W = 300; // Reduced from 400 for faster detection
+    const H = Jimp.AUTO;
+    image.resize(W, H);
+
+    // HUMAN DETECTION: Check if frame contains a human
+    const humanCheck = detectHuman(image);
+    
+    const detections = [];
+    const humans = [];
+    let humanBox = null;
+    
+    // If human detected, add to humans array with ACTUAL bounding box
+    if (humanCheck.isHuman) {
+      humanBox = humanCheck.boundingBox;
+      humans.push({
+        type: 'human',
+        confidence: Number(humanCheck.skinRatio.toFixed(3)),
+        boundingBox: humanBox
+      });
+    }
+
+    // Compute edge-like response using simple convolution (Sobel-ish)
+    const gx = [
+      [-1, 0, 1],
+      [-2, 0, 2],
+      [-1, 0, 1]
+    ];
+    const gy = [
+      [-1, -2, -1],
+      [0, 0, 0],
+      [1, 2, 1]
+    ];
+
+    const gray = image.clone().greyscale();
+    const w = gray.bitmap.width;
+    const h = gray.bitmap.height;
+    const data = gray.bitmap.data;
+
+    let edgeSum = 0;
+    let sampleCount = 0;
+
+    // Sample pixels to keep compute reasonable
+    const step = Math.max(1, Math.floor(w * h / 8000));
+
+    for (let y = 1; y < h - 1; y += step) {
+      for (let x = 1; x < w - 1; x += step) {
+        let sumX = 0;
+        let sumY = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const px = x + kx;
+            const py = y + ky;
+            const idx = (py * w + px) << 2;
+            const lum = data[idx]; // greyscale -> R==G==B
+            sumX += gx[ky + 1][kx + 1] * lum;
+            sumY += gy[ky + 1][kx + 1] * lum;
+          }
+        }
+        const mag = Math.sqrt(sumX * sumX + sumY * sumY);
+        edgeSum += mag;
+        sampleCount++;
+      }
+    }
+
+    const edgeMean = sampleCount > 0 ? edgeSum / sampleCount : 0;
+
+    // Compute aspect ratio
+    const aspectRatio = w / h;
+
+    // Average color (on original resized image)
+    const rgbImg = image.clone();
+    let rSum = 0, gSum = 0, bSum = 0, pxCount = 0;
+    const rgbData = rgbImg.bitmap.data;
+    for (let i = 0; i < rgbData.length; i += 4) {
+      rSum += rgbData[i];
+      gSum += rgbData[i + 1];
+      bSum += rgbData[i + 2];
+      pxCount++;
+    }
+    const avgR = rSum / pxCount;
+    const avgG = gSum / pxCount;
+    const avgB = bSum / pxCount;
+
+    // Heuristic thresholds: require clear product evidence
+    // Very low threshold to accept various product types, rely on reference matching for accuracy
+    const EDGE_THRESHOLD = 4; // Very low threshold - let reference matching determine accuracy
+
+    // If edgeMean is extremely low, likely empty frame or pure background -> return no detections
+    if (edgeMean < EDGE_THRESHOLD) {
+      const base = {
+        success: true,
+        filename: filename,
+        timestamp: new Date().toISOString(),
+        detections: []
+      };
+      if (options.debug) {
+        base.diagnostics = {
+          edgeMean: Number(edgeMean.toFixed(2)),
+          aspectRatio: Number(aspectRatio.toFixed(3)),
+          avgColor: { r: Math.round(avgR), g: Math.round(avgG), b: Math.round(avgB) },
+          reason: 'edgeMean below threshold'
+        };
+      }
+      return base;
+    }
+
+    // If we have edges, attempt a conservative match to catalog based on shape (aspect) and color
+    // Map aspect ratio to shape preference
+    const inferredShape = (function(ar) {
+      if (ar > 1.35) return 'rectangular';
+      if (ar < 0.75) return 'rectangular';
+      return 'cylinder'; // treat near-square as cylindrical/round
+    })(aspectRatio);
+
+    // NEW ALGORITHM: Prioritize shape, size, edges, and texture over color
+    // Compute MULTIPLE reference signatures for multi-angle matching
+    const uploadedAhash = await computeAHashFromJimp(image);
+    const uploadedPhash = await computePHashFromJimp(image);
+    const uploadedShash = await computeStructuralHash(image);
+    const uploadedHist = computeColorHistogramFromJimp(image);
+
+    // Compute texture features (edge variance)
+    const textureScore = edgeMean / 30; // Normalize edge density as texture indicator
+    
+    // FAST SEMANTIC FEATURE DETECTION - Only critical features for speed
+    const detectedFeatures = {
+      hasScreen: detectScreen(image),
+      circularElements: 0, // Skip slow circular detection
+      reflectivity: detectReflectivity(image),
+      isMetallic: false, // Skip for speed
+      hasTransparency: false, // Skip for speed
+      hasText: false, // Skip for speed
+      uniformity: 0.5, // Default
+      hasCompartments: false // Skip for speed
+    };
+
+    // Compare products: PRIORITIZE shape (50%), size (25%), texture (15%), color only (10%)
+    let best = null;
+    let bestScore = 0;
+    const diagnostics = [];
+    for (const p of productDB) {
+      let heuristicScore = 0;
+      
+      // 1. SHAPE MATCHING (50% weight) - Most important
+      let shapeScore = 0;
+      if (p.shape) {
+        const pShape = p.shape.toLowerCase();
+        // Exact shape match
+        if (pShape === inferredShape) {
+          shapeScore = 1.0;
+        } else if ((pShape === 'rectangular' && Math.abs(aspectRatio - 1.0) > 0.5) ||
+                   (pShape === 'cylinder' && Math.abs(aspectRatio - 1.0) <= 0.5)) {
+          shapeScore = 0.7; // Partial shape match
+        } else {
+          shapeScore = 0.3; // Different shape
+        }
+      }
+      heuristicScore += 0.50 * shapeScore;
+      
+      // 2. SIZE MATCHING (25% weight) - Second most important
+      let sizeScore = 0.5; // Default neutral
+      if (p.size) {
+        const pSize = p.size.toLowerCase();
+        // Estimate size from image dimensions and aspect ratio
+        const imageArea = w * h;
+        if (pSize === 'small' && imageArea < 200000) sizeScore = 1.0;
+        else if (pSize === 'medium' && imageArea >= 150000 && imageArea <= 300000) sizeScore = 1.0;
+        else if (pSize === 'large' && imageArea > 250000) sizeScore = 1.0;
+        else sizeScore = 0.4; // Size mismatch penalty
+      }
+      heuristicScore += 0.25 * sizeScore;
+      
+      // 3. TEXTURE/EDGE MATCHING (15% weight) - Packaging and surface details
+      let edgeMatchScore = 0.5;
+      if (p.texture) {
+        const pTexture = p.texture.toLowerCase();
+        if ((pTexture.includes('smooth') || pTexture.includes('glossy')) && textureScore < 0.5) {
+          edgeMatchScore = 0.8;
+        } else if ((pTexture.includes('ridged') || pTexture.includes('textured')) && textureScore > 0.6) {
+          edgeMatchScore = 0.9;
+        }
+      }
+      heuristicScore += 0.15 * edgeMatchScore;
+      
+      // 4. COLOR (10% weight) - Least important, only as tiebreaker
+      let colorScore = 0.5; // Neutral default
+      if (p.color) {
+        const colorName = p.color.toLowerCase();
+        const colorMap = {
+          'white': [245,245,245],
+          'silver': [192,192,192],
+          'brown': [150,75,0],
+          'dark brown': [90,50,20],
+          'beige': [245,245,220],
+          'green': [34,139,34],
+          'blue': [30,144,255],
+          'purple': [128,0,128],
+          'golden': [212,175,55],
+          'tan': [210,180,140],
+          'black': [30,30,30]
+        };
+        const target = colorMap[colorName] || [200, 180, 160];
+        const dr = avgR - target[0];
+        const dg = avgG - target[1];
+        const db = avgB - target[2];
+        const dist = Math.sqrt(dr*dr + dg*dg + db*db) / 441.67;
+        colorScore = Math.max(0, 1 - dist);
+      }
+      heuristicScore += 0.10 * colorScore;
+      
+      // 5. SEMANTIC FEATURE MATCHING (30% weight) - NEW! Object-specific features
+      let featureMatchScore = 0;
+      if (p.detectableFeatures) {
+        const expected = p.detectableFeatures;
+        const detected = detectedFeatures;
+        let matches = 0;
+        let total = 0;
+        
+        // Screen detection (critical for phones/watches)
+        if (expected.hasScreen !== undefined) {
+          total++;
+          if (expected.hasScreen === detected.hasScreen) matches += 1.5; // Extra weight
+        }
+        
+        // Circular elements (cameras, caps, lenses)
+        if (expected.circularElements !== undefined) {
+          total++;
+          const diff = Math.abs(expected.circularElements - detected.circularElements);
+          matches += Math.max(0, 1 - diff);
+        }
+        
+        // Reflectivity
+        if (expected.reflectivity !== undefined) {
+          total++;
+          if (expected.reflectivity === detected.reflectivity) matches++;
+        }
+        
+        // Metallic surface
+        if (expected.isMetallic !== undefined) {
+          total++;
+          if (expected.isMetallic === detected.isMetallic) matches++;
+        }
+        
+        // Transparency/glass
+        if (expected.hasTransparency !== undefined) {
+          total++;
+          if (expected.hasTransparency === detected.hasTransparency) matches++;
+        }
+        
+        // Text/labels
+        if (expected.hasText !== undefined) {
+          total++;
+          if (expected.hasText === detected.hasText) matches++;
+        }
+        
+        // Compartments
+        if (expected.hasCompartments !== undefined) {
+          total++;
+          if (expected.hasCompartments === detected.hasCompartments) matches++;
+        }
+        
+        featureMatchScore = total > 0 ? matches / total : 0;
+      }
+      
+      // Recalculate weights: Shape (35%), Features (30%), Size (20%), Texture (10%), Color (5%)
+      heuristicScore = 0.35 * shapeScore + 0.30 * featureMatchScore + 0.20 * sizeScore + 
+                       0.10 * edgeMatchScore + 0.05 * colorScore;
+
+      // Reference matching score (if references exist) - MULTI-HASH for better angle handling
+      let refBestScore = 0;
+      const pid = p.id || p.name.replace(/\s+/g, '_').toLowerCase();
+      const refs = referenceSignatures[pid];
+      if (refs && refs.length) {
+        for (const r of refs) {
+          // aHash - basic similarity
+          const aHashDist = xorCount(uploadedAhash, r.ahash);
+          const aHashSim = 1 - (aHashDist / uploadedAhash.length);
+          
+          // pHash - better for lighting/angle changes
+          const pHashDist = xorCount(uploadedPhash, r.phash);
+          const pHashSim = 1 - (pHashDist / uploadedPhash.length);
+          
+          // Structural hash - best for shape matching
+          const sHashDist = xorCount(uploadedShash, r.shash);
+          const sHashSim = 1 - (sHashDist / uploadedShash.length);
+          
+          // Color histogram - reduced weight
+          const histSim = histIntersection(uploadedHist, r.hist);
+          
+          // WEIGHTED COMBO: Structure (40%), pHash (35%), aHash (15%), Color (10%)
+          const rscore = 0.40 * sHashSim + 0.35 * pHashSim + 0.15 * aHashSim + 0.10 * histSim;
+          if (rscore > refBestScore) refBestScore = rscore;
+        }
+      }
+
+      // Combine refBestScore and heuristicScore - balance both for multi-angle accuracy
+      // Reference matching helps with angles, but heuristic ensures shape/size correctness
+      let finalScore = 0;
+      if (refBestScore > 0.85) {
+        finalScore = 0.75 * refBestScore + 0.25 * heuristicScore; // Strong ref + shape validation
+      } else if (refBestScore > 0.65) {
+        finalScore = 0.60 * refBestScore + 0.40 * heuristicScore; // Balanced matching
+      } else if (refBestScore > 0) {
+        finalScore = 0.40 * refBestScore + 0.60 * heuristicScore; // Heuristic dominates for weak refs
+      } else {
+        finalScore = heuristicScore; // No refs, use shape/size/texture only
+      }
+
+      if (finalScore > bestScore) {
+        bestScore = finalScore;
+        best = { product: p, refScore: refBestScore };
+      }
+
+      // push diagnostics for this product
+      diagnostics.push({
+        id: p.id,
+        name: p.name,
+        shape: p.shape,
+        size: p.size,
+        shapeMatch: Number(shapeScore?.toFixed(3) || 0),
+        sizeMatch: Number(sizeScore?.toFixed(3) || 0),
+        featureMatch: Number(featureMatchScore?.toFixed(3) || 0),
+        heuristicScore: Number(heuristicScore.toFixed(4)),
+        refBestScore: Number(refBestScore.toFixed(4)),
+        finalScore: Number(finalScore.toFixed(4))
+      });
+    }
+
+    // STRICT THRESHOLD: 80% confidence minimum (0.80)
+    // Only report product if clearly detected with high confidence
+    const confidence = Math.min(0.99, bestScore);
+    const bp = best?.product;
+    
+    // Reject if:
+    // 1. No match found
+    // 2. Confidence below 80%
+    // 3. Very low edge detection (empty frame)
+    if (!best || confidence < 0.80 || edgeMean < 5) {
+      const base = {
+        success: true,
+        filename: filename,
+        timestamp: new Date().toISOString(),
+        detections: [],
+        message: "no product detected"
+      };
+      if (options.debug) {
+        base.diagnostics = {
+          reason: !best ? 'no match' : confidence < 0.80 ? 'low confidence' : 'empty frame',
+          bestScore: bestScore.toFixed(3),
+          edgeMean: edgeMean.toFixed(2),
+          topMatches: diagnostics.sort((a, b) => b.finalScore - a.finalScore).slice(0, 3)
+        };
+      }
+      console.log('❌ No product detected (confidence:', (confidence * 100).toFixed(1) + '%)');
+      return base;
+    }
+    
+    console.log('✅ Detected:', bp.name, '- Confidence:', (confidence * 100).toFixed(1) + '%');
+    const result = {
+      success: true,
+      filename: filename,
+      timestamp: new Date().toISOString(),
+      humans: humans,
+      detections: [
+        {
+          id: bp.id,
+          type: bp.name,
+          category: bp.category,
+          confidence: parseFloat(confidence.toFixed(3)),
+          price: bp.price,
+          characteristics: bp.characteristics,
+          shape: bp.shape,
+          size: bp.size,
+          color: bp.color,
+          texture: bp.texture,
+          packaging: bp.packaging,
+          uniqueFeatures: bp.uniqueFeatures,
+          location: bp.location,
+          boundingBox: detectProductLocation(image, humanBox)
+        }
+      ]
+    };
+    if (options.debug) result.diagnostics = diagnostics;
+    return result;
+  } catch (err) {
+    console.error('analyzeImageAndDetect error:', err);
+    return {
+      success: false,
+      error: err.message
+    };
+  }
+}
+
+// Page Routes
+app.get('/v2', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index2.html'));
+});
+
+// API Routes
+app.get('/api/catalog', (req, res) => {
+  res.json({
+    success: true,
+    total: productDB.length,
+    products: productDB
+  });
+});
+
+app.post('/api/detect', upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: 'No image provided' });
+  }
+
+  console.log(`🔍 Received image: ${req.file.filename}`);
+
+  // Simulate processing time
+  // Prioritize accuracy: perform image analysis (may take longer)
+  // Prioritize accuracy: perform image analysis (may take longer)
+  (async () => {
+    try {
+      const debug = req.query && req.query.debug === '1';
+      const response = await analyzeImageAndDetect(req.file.path, req.file.filename, { debug });
+      if (response.detections && response.detections.length) {
+        console.log(`✓ Detection result: ${response.detections[0].type} (${(response.detections[0].confidence * 100).toFixed(1)}%)`);
+      } else {
+        console.log('ℹ No product detected in image');
+      }
+      // Return result
+      res.json(response);
+    } catch (err) {
+      console.error('Detection error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  })();
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', service: 'Edge Insights Demo' });
+});
+
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({ success: false, error: err.message });
+});
+
+// Server startup (ensure product catalog & reference signatures are loaded first)
+(async () => {
+  try {
+    loadProductCatalog();
+    await loadReferenceSignatures();
+    app.listen(PORT, () => {
+      console.log(`
+╔════════════════════════════════════════════════════╗
+║  Intel Edge Insights Product Recognition Demo     ║
+║  🌐 Server running on http://localhost:${PORT}       ║
+║  📦 Open browser and navigate to root URL          ║
+╚════════════════════════════════════════════════════╝
+  `);
+    });
+  } catch (err) {
+    console.error('Startup error:', err);
+    process.exit(1);
+  }
+})();

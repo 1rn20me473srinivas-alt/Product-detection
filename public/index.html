@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intel Edge Insights - Product Recognition Demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Navigation Bar -->
+  <nav class="navbar">
+    <div class="nav-container">
+      <div class="nav-brand">
+        <span class="brand-icon">🛍️</span>
+        <span class="brand-text">Intel Edge Insights</span>
+      </div>
+      <div class="nav-links">
+        <span class="nav-badge">AI Product Recognition</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="hero-content">
+      <h1 class="hero-title">AI-Powered Product Recognition</h1>
+      <p class="hero-subtitle">Real-time detection using edge computing with intelligent inference</p>
+    </div>
+  </section>
+
+  <!-- Main Content -->
+  <div class="main-container">
+    <div class="content-grid">
+      
+      <!-- Left Column: Camera & Upload -->
+      <div class="left-column">
+        <!-- Camera Card -->
+        <div class="glass-card camera-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <span class="title-icon">📷</span>
+              Live Camera Feed
+            </h2>
+            <span id="camera-status" class="status-pill">Ready</span>
+          </div>
+          
+          <div class="camera-wrapper">
+            <div class="video-frame camera-container">
+              <video id="video" autoplay muted playsinline></video>
+              <canvas id="canvas" style="display:none;"></canvas>
+              <div class="frame-overlay"></div>
+            </div>
+          </div>
+
+          <div class="action-bar">
+            <button id="btnStart" class="btn-modern btn-primary">
+              <span class="btn-icon">▶</span>
+              <span>Start Camera</span>
+            </button>
+            <button id="btnCapture" class="btn-modern btn-accent" disabled>
+              <span class="btn-icon">📸</span>
+              <span>Capture</span>
+            </button>
+            <button id="btnStop" class="btn-modern btn-danger" disabled>
+              <span class="btn-icon">⏹</span>
+              <span>Stop</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Upload Section Removed - Live Camera Only -->
+
+        <!-- Settings Card -->
+        <div class="glass-card settings-card">
+          <div class="card-header">
+            <h3 class="card-subtitle">
+              <span class="title-icon">⚙️</span>
+              Detection Settings
+            </h3>
+          </div>
+          <div class="settings-content">
+            <label class="switch-label">
+              <input type="checkbox" id="autoScan" class="switch-input">
+              <span class="switch-slider"></span>
+              <span class="switch-text">Auto-Scan Mode</span>
+            </label>
+            <label class="switch-label">
+              <input type="checkbox" id="showBounds" checked class="switch-input">
+              <span class="switch-slider"></span>
+              <span class="switch-text">Show Bounding Boxes</span>
+            </label>
+            <div class="info-banner">
+              <span class="info-icon">💡</span>
+              <p class="info-text">Auto-scan continuously analyzes frames when motion is detected</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Results & Catalog -->
+      <div class="right-column">
+        <!-- Results Card -->
+        <div class="glass-card results-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <span class="title-icon">🔍</span>
+              Detection Results
+            </h2>
+          </div>
+          <div id="results" class="results-area">
+            <div class="empty-state">
+              <div class="empty-icon">📭</div>
+              <p class="empty-title">No Detections Yet</p>
+              <p class="empty-subtitle">Capture an image or enable auto-scan</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Catalog Card -->
+        <div class="glass-card catalog-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <span class="title-icon">📚</span>
+              Product Catalog
+            </h2>
+            <button id="btnLoadCatalog" class="btn-small btn-outline">Load Catalog</button>
+          </div>
+          <div id="catalog" class="catalog-area">
+            <p class="catalog-placeholder">Click "Load Catalog" to view products</p>
+          </div>
+        </div>
+
+        <!-- Statistics Card -->
+        <div class="glass-card stats-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <span class="title-icon">📊</span>
+              Analytics
+            </h2>
+          </div>
+          <div class="stats-container">
+            <div class="stat-box">
+              <div class="stat-value" id="statDetections">0</div>
+              <div class="stat-label">Total Detections</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-value" id="statConfidence">-</div>
+              <div class="stat-label">Avg Confidence</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-value" id="statTime">-</div>
+              <div class="stat-label">Avg Response</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer-content">
+      <p class="footer-text">Intel Edge Insights Demo • Mock Inference Engine</p>
+      <p class="footer-subtext">Educational Use Only • Powered by Edge Computing</p>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
