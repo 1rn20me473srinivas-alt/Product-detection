@@ -1,0 +1,376 @@
+[
+  {
+    "id": "p1",
+    "name": "Dark Chocolate Bar",
+    "category": "Confectionery",
+    "type": "Chocolate",
+    "price": 5.99,
+    "characteristics": [
+      "bar",
+      "wrapped",
+      "dark chocolate"
+    ],
+    "shape": "rectangular",
+    "size": "small",
+    "color": "dark brown",
+    "texture": "ridged",
+    "packaging": "foil wrapper",
+    "uniqueFeatures": [
+      "85% cocoa",
+      "organic",
+      "fair trade"
+    ],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0,
+      "reflectivity": true,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": true,
+      "uniformity": 0.6,
+      "hasCompartments": false
+    },
+    "location": "aisle-1",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"]
+  },
+  {
+    "id": "p2",
+    "name": "Yoga Mat",
+    "category": "Sports",
+    "type": "Exercise Equipment",
+    "price": 45.99,
+    "characteristics": [
+      "mat",
+      "rubber",
+      "rolled"
+    ],
+    "shape": "rectangular",
+    "size": "large",
+    "color": "purple",
+    "texture": "textured",
+    "packaging": "carrying strap",
+    "uniqueFeatures": [
+      "non-slip",
+      "eco-friendly",
+      "6mm thick"
+    ],
+    "location": "aisle-2",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0,
+      "reflectivity": false,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.9,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p3",
+    "name": "Fitness Water Bottle",
+    "category": "Sports",
+    "type": "Hydration",
+    "price": 29.99,
+    "characteristics": [
+      "bottle",
+      "plastic",
+      "sports design"
+    ],
+    "shape": "cylindrical",
+    "size": "medium",
+    "color": "blue",
+    "texture": "smooth",
+    "packaging": "box",
+    "uniqueFeatures": [
+      "BPA-free",
+      "leak-proof",
+      "time markers"
+    ],
+    "location": "aisle-3",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.4,
+      "reflectivity": false,
+      "isMetallic": false,
+      "hasTransparency": true,
+      "hasText": true,
+      "uniformity": 0.7,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p4",
+    "name": "Smartwatch Fitness Tracker",
+    "category": "Electronics",
+    "type": "Wearable",
+    "price": 199.99,
+    "characteristics": [
+      "watch",
+      "digital display",
+      "band"
+    ],
+    "shape": "square",
+    "size": "small",
+    "color": "black",
+    "texture": "matte",
+    "packaging": "box",
+    "uniqueFeatures": [
+      "heart rate monitor",
+      "GPS",
+      "waterproof"
+    ],
+    "location": "aisle-4",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": true,
+      "circularElements": 0.2,
+      "reflectivity": false,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.7,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p5",
+    "name": "Wireless Earbuds",
+    "category": "Electronics",
+    "type": "Audio",
+    "price": 89.99,
+    "characteristics": [
+      "earbuds",
+      "charging case",
+      "wireless"
+    ],
+    "shape": "oval",
+    "size": "small",
+    "color": "white",
+    "texture": "glossy",
+    "packaging": "case",
+    "uniqueFeatures": [
+      "noise cancellation",
+      "30hr battery",
+      "touch control"
+    ],
+    "location": "aisle-5",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.5,
+      "reflectivity": true,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.9,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p6",
+    "name": "USB-C Power Bank",
+    "category": "Electronics",
+    "type": "Charger",
+    "price": 34.99,
+    "characteristics": [
+      "power bank",
+      "portable",
+      "USB-C"
+    ],
+    "shape": "rectangular",
+    "size": "small",
+    "color": "silver",
+    "texture": "matte",
+    "packaging": "box",
+    "uniqueFeatures": [
+      "20000mAh",
+      "fast charging",
+      "LED display"
+    ],
+    "location": "aisle-6",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.1,
+      "reflectivity": false,
+      "isMetallic": true,
+      "hasTransparency": false,
+      "hasText": true,
+      "uniformity": 0.8,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p7",
+    "name": "Blue Light Glasses",
+    "category": "Accessories",
+    "type": "Eyewear",
+    "price": 79.99,
+    "characteristics": [
+      "glasses",
+      "frames",
+      "lenses"
+    ],
+    "shape": "rectangular",
+    "size": "small",
+    "color": "black",
+    "texture": "matte",
+    "packaging": "case",
+    "uniqueFeatures": [
+      "blue light filter",
+      "anti-glare",
+      "fashion design"
+    ],
+    "location": "aisle-7",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.3,
+      "reflectivity": true,
+      "isMetallic": false,
+      "hasTransparency": true,
+      "hasText": false,
+      "uniformity": 0.4,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p8",
+    "name": "Portable Lunch Box",
+    "category": "Kitchenware",
+    "type": "Food Container",
+    "price": 22.99,
+    "characteristics": [
+      "container",
+      "plastic",
+      "compartmented"
+    ],
+    "shape": "rectangular",
+    "size": "medium",
+    "color": "green",
+    "texture": "smooth",
+    "packaging": "box",
+    "uniqueFeatures": [
+      "leak-proof",
+      "microwave safe",
+      "divided sections"
+    ],
+    "location": "aisle-8",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0,
+      "reflectivity": false,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.7,
+      "hasCompartments": true
+    }
+  },
+  {
+    "id": "p9",
+    "name": "Stainless Steel Water Bottle",
+    "category": "Drinkware",
+    "type": "Water Bottle",
+    "price": 24.99,
+    "characteristics": [
+      "stainless steel",
+      "insulated",
+      "reusable"
+    ],
+    "shape": "cylindrical",
+    "size": "medium",
+    "color": "silver",
+    "texture": "brushed metal",
+    "packaging": "box",
+    "uniqueFeatures": [
+      "keeps cold 24hrs",
+      "leak-proof cap",
+      "wide mouth"
+    ],
+    "location": "aisle-9",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.4,
+      "reflectivity": false,
+      "isMetallic": true,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.95,
+      "hasCompartments": false
+    }
+  },
+  {
+    "id": "p10",
+    "name": "Smartphone",
+    "category": "Electronics",
+    "type": "Mobile Device",
+    "price": 799.99,
+    "characteristics": [
+      "touchscreen",
+      "glass",
+      "metal frame"
+    ],
+    "shape": "rectangular",
+    "size": "small",
+    "color": "black",
+    "texture": "glossy",
+    "packaging": "premium box",
+    "uniqueFeatures": [
+      "5G enabled",
+      "triple camera",
+      "wireless charging"
+    ],
+    "detectableFeatures": {
+      "hasScreen": true,
+      "circularElements": 0.3,
+      "reflectivity": true,
+      "isMetallic": false,
+      "hasTransparency": false,
+      "hasText": false,
+      "uniformity": 0.8,
+      "hasCompartments": false
+    },
+    "location": "aisle-10",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"]
+  },
+  {
+    "id": "p11",
+    "name": "Perfume Bottle",
+    "category": "Fragrance",
+    "type": "Eau de Parfum",
+    "price": 89.99,
+    "characteristics": [
+      "glass bottle",
+      "spray nozzle",
+      "luxury"
+    ],
+    "shape": "rectangular",
+    "size": "small",
+    "color": "emerald",
+    "texture": "glossy",
+    "packaging": "gift box",
+    "uniqueFeatures": [
+      "designer fragrance",
+      "long lasting",
+      "elegant design"
+    ],
+    "location": "aisle-11",
+    "references": ["references/p$1/p$1_ref_0.jpg", "references/p$1/p$1_ref_1.jpg", "references/p$1/p$1_ref_2.jpg"],
+    "detectableFeatures": {
+      "hasScreen": false,
+      "circularElements": 0.2,
+      "reflectivity": true,
+      "isMetallic": false,
+      "hasTransparency": true,
+      "hasText": true,
+      "uniformity": 0.5,
+      "hasCompartments": false
+    }
+  }
+]

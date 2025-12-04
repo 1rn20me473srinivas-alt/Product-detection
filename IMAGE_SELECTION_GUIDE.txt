@@ -1,0 +1,74 @@
+# Quick Reference: What Images to Look For
+
+## Product 1: Dark Chocolate Bar
+- Wrapped chocolate bar showing foil/paper wrapper
+- Close-up showing "85%" or cocoa percentage text
+- Side/corner view showing thickness and ridges
+
+## Product 2: Yoga Mat
+- Rolled mat with carrying strap visible
+- Flat mat showing texture/pattern
+- Edge view showing thickness
+
+## Product 3: Fitness Water Bottle
+- Transparent plastic bottle (can see through it)
+- Time markers or measurements visible on side
+- Cap/spout detail
+
+## Product 4: Smartwatch
+- Screen ON with display visible (NOT just black screen)
+- Watch on wrist showing band
+- Side view showing buttons/crown
+
+## Product 5: Wireless Earbuds
+- Charging case open showing earbuds inside
+- Earbuds outside case showing round tips
+- Close-up of case showing glossy finish
+
+## Product 6: Power Bank
+- Front showing LED display/battery indicator
+- Side showing USB-C ports
+- Metallic/aluminum finish visible
+
+## Product 7: Glasses
+- Front view showing transparent lenses
+- Folded showing temple arms/hinges
+- Side profile showing arms extended
+
+## Product 8: Lunch Box
+- OPEN lid showing divided compartments (IMPORTANT!)
+- Closed box from top
+- Side view showing sections
+
+## Product 9: Stainless Steel Water Bottle
+- Full bottle showing brushed metal surface
+- Cap/lid detail (circular top)
+- NO transparency (solid metal, not see-through)
+
+## Product 10: Smartphone
+- Screen ON with bright display/UI visible (CRITICAL!)
+- Back view showing camera circles
+- Side view showing thin profile
+
+## Product 11: Deodorant Spray
+- Full can showing brand/label
+- Top view showing spray nozzle/cap
+- Cylindrical shape clearly visible
+
+---
+
+## IMPORTANT DISTINCTIONS:
+
+### Water Bottles:
+- Product 3 (Fitness) = TRANSPARENT plastic, can see liquid inside
+- Product 9 (Steel) = SOLID metal, completely opaque
+
+### Screens:
+- Product 4 (Smartwatch) = Small square screen on wrist
+- Product 10 (Smartphone) = Large rectangular screen in hand
+
+### Features to Prioritize:
+1. Unique identifiers (screens, compartments, transparency)
+2. Different angles (front, side, top)
+3. Clear lighting (bright, not dark/shadowy)
+4. High resolution (avoid tiny thumbnails)

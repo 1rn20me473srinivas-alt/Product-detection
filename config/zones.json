@@ -1,0 +1,62 @@
+[
+  {
+    "productId": "p1",
+    "name": "Yoga Mat Zone",
+    "x": 50,
+    "y": 100,
+    "width": 200,
+    "height": 300,
+    "proximityThreshold": 100,
+    "description": "Top-left shelf area for yoga mat products"
+  },
+  {
+    "productId": "p2",
+    "name": "Smartwatch Zone",
+    "x": 270,
+    "y": 100,
+    "width": 180,
+    "height": 280,
+    "proximityThreshold": 100,
+    "description": "Top-center shelf area for smartwatch products"
+  },
+  {
+    "productId": "p3",
+    "name": "Earbuds Zone",
+    "x": 470,
+    "y": 100,
+    "width": 180,
+    "height": 280,
+    "proximityThreshold": 100,
+    "description": "Top-right shelf area for earbud products"
+  },
+  {
+    "productId": "p4",
+    "name": "Water Bottle Zone",
+    "x": 50,
+    "y": 400,
+    "width": 200,
+    "height": 300,
+    "proximityThreshold": 100,
+    "description": "Bottom-left shelf area for water bottle products"
+  },
+  {
+    "productId": "p5",
+    "name": "Smartphone Zone",
+    "x": 270,
+    "y": 400,
+    "width": 180,
+    "height": 280,
+    "proximityThreshold": 100,
+    "description": "Bottom-center shelf area for smartphone products"
+  },
+  {
+    "productId": "p6",
+    "name": "Perfume Zone",
+    "x": 470,
+    "y": 400,
+    "width": 180,
+    "height": 280,
+    "proximityThreshold": 100,
+    "description": "Bottom-right shelf area for perfume products"
+  }
+]

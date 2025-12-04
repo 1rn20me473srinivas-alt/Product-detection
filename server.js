@@ -26,6 +26,8 @@ const upload = multer({ storage });
 let productDB = [];
 // Reference signatures loaded from `references/` or `catalog[].references`
 const referenceSignatures = {}; // productId -> [{ path, ahash, hist }]
+// Product zones (ROIs) for person-gated detection
+let productZones = [];
 
 // Helpers for signatures
 function xorCount(a, b) {
@@ -186,7 +188,10 @@ function detectHuman(image) {
   
   const skinRatio = skinPixels / totalPixels;
   const faceRegionRatio = faceRegionPixels / (totalPixels / 3);
-  const isHuman = skinRatio > 0.15 || faceRegionRatio > 0.25;
+  const isHuman = skinRatio > 0.08 || faceRegionRatio > 0.15;
+  
+  // DEBUG: Always log detection status
+  console.log(`👤 Human Detection: skinRatio=${(skinRatio*100).toFixed(1)}%, faceRegion=${(faceRegionRatio*100).toFixed(1)}%, isHuman=${isHuman}`);
   
   // Calculate normalized bounding box
   let boundingBox = { x: 0.15, y: 0.1, width: 0.7, height: 0.8 }; // default
@@ -218,7 +223,27 @@ function detectHuman(image) {
   };
 }
 
-// Detect product location in image using edge detection and color clustering
+// Helper: Check if pixel is skin tone
+function isSkinTone(r, g, b) {
+  const skinRanges = [
+    { rMin: 95, rMax: 255, gMin: 40, gMax: 100, bMin: 20, bMax: 85 },
+    { rMin: 80, rMax: 220, gMin: 50, gMax: 150, bMin: 30, bMax: 100 },
+    { rMin: 150, rMax: 255, gMin: 100, gMax: 200, bMin: 80, bMax: 150 }
+  ];
+  
+  for (const range of skinRanges) {
+    if (r >= range.rMin && r <= range.rMax &&
+        g >= range.gMin && g <= range.gMax &&
+        b >= range.bMin && b <= range.bMax) {
+      if (r > g && g >= b) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Detect product location in image - EXCLUDE person body, focus on held objects
 function detectProductLocation(image, excludeHumanBox = null) {
   const data = image.bitmap.data;
   const w = image.bitmap.width;
@@ -227,11 +252,14 @@ function detectProductLocation(image, excludeHumanBox = null) {
   // Create edge map
   const edges = new Array(w * h).fill(0);
   
-  for (let y = 1; y < h - 1; y++) {
+  // CRITICAL: Only scan lower 60% of frame where hands hold products (exclude head/upper body)
+  const startY = Math.floor(h * 0.4);
+  
+  for (let y = Math.max(1, startY); y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const idx = (y * w + x) << 2;
       
-      // Simple Sobel-like edge detection
+      // Simple Sobel-like edge detection - NO FILTERING
       let gx = 0, gy = 0;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -252,7 +280,9 @@ function detectProductLocation(image, excludeHumanBox = null) {
   const gridH = Math.ceil(h / gridSize);
   const gridScores = [];
   
-  for (let gy = 0; gy < gridH; gy++) {
+  const startGridY = Math.floor((h * 0.4) / gridSize);
+  
+  for (let gy = startGridY; gy < gridH; gy++) {
     for (let gx = 0; gx < gridW; gx++) {
       let edgeSum = 0;
       let count = 0;
@@ -274,7 +304,8 @@ function detectProductLocation(image, excludeHumanBox = null) {
         }
       }
       
-      if (count > 0) {
+      // Accept any region with edges - NO FILTERING
+      if (count > 0 && edgeSum > 0) {
         gridScores.push({
           x: gx * gridSize,
           y: gy * gridSize,
@@ -606,15 +637,85 @@ async function loadReferenceSignatures() {
   console.log('✓ Loaded reference signatures for', Object.keys(referenceSignatures).length, 'products');
 }
 
+// Load product zones (ROIs)
+function loadProductZones() {
+  try {
+    const zonesPath = path.join(__dirname, 'config', 'zones.json');
+    if (!fs.existsSync(zonesPath)) {
+      console.warn('⚠️  No zones.json found, proximity gating disabled');
+      return;
+    }
+    
+    const rawData = fs.readFileSync(zonesPath, 'utf8');
+    productZones = JSON.parse(rawData);
+    console.log(`✅ Loaded ${productZones.length} product zones:`);
+    productZones.forEach(z => console.log(`   - ${z.productId}: ${z.name} (${z.x},${z.y} ${z.width}x${z.height})`));
+  } catch (err) {
+    console.error('❌ Error loading zones:', err.message);
+  }
+}
+
+// Check if person is in any product zone
+function checkPersonInZone(personBox) {
+  if (!personBox || !productZones.length) return { inZone: false };
+  
+  const personCenterX = personBox.x + (personBox.width / 2);
+  const personCenterY = personBox.y + (personBox.height / 2);
+  
+  let nearestZone = null;
+  let minDistance = Infinity;
+  
+  for (const zone of productZones) {
+    const zoneCenterX = zone.x + (zone.width / 2);
+    const zoneCenterY = zone.y + (zone.height / 2);
+    
+    const distance = Math.sqrt(
+      Math.pow(personCenterX - zoneCenterX, 2) + 
+      Math.pow(personCenterY - zoneCenterY, 2)
+    );
+    
+    // Check if person overlaps zone or is within proximity threshold
+    const overlapsX = personCenterX >= zone.x && personCenterX <= (zone.x + zone.width);
+    const overlapsY = personCenterY >= zone.y && personCenterY <= (zone.y + zone.height);
+    const withinThreshold = distance <= (zone.proximityThreshold || 100);
+    
+    if ((overlapsX && overlapsY) || withinThreshold) {
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestZone = zone;
+      }
+    }
+  }
+  
+  if (nearestZone) {
+    return {
+      inZone: true,
+      productId: nearestZone.productId,
+      zoneName: nearestZone.name,
+      distance: Math.round(minDistance)
+    };
+  }
+  
+  return { inZone: false };
+}
+
 // Load product catalog
 function loadProductCatalog() {
   try {
     const catalogPath = path.join(__dirname, 'catalog', 'products.json');
+    console.log(`📂 Loading catalog from: ${catalogPath}`);
+    
+    if (!fs.existsSync(catalogPath)) {
+      throw new Error('Catalog file not found');
+    }
+    
     const rawData = fs.readFileSync(catalogPath, 'utf8');
     productDB = JSON.parse(rawData);
-    console.log(`✓ Loaded ${productDB.length} products from catalog`);
+    console.log(`✅ Loaded ${productDB.length} products from catalog:`);
+    productDB.forEach(p => console.log(`   - ${p.id}: ${p.name} ($${p.price})`));
   } catch (err) {
-    console.log('⚠ Warning: Could not load product catalog. Using default products.');
+    console.error('❌ Error loading product catalog:', err.message);
+    console.log('⚠️  Using default fallback products instead');
     productDB = [
       {
         id: 'p1',
@@ -760,8 +861,11 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
     const avgB = bSum / pxCount;
 
     // Heuristic thresholds: require clear product evidence
-    // Very low threshold to accept various product types, rely on reference matching for accuracy
-    const EDGE_THRESHOLD = 4; // Very low threshold - let reference matching determine accuracy
+    // Low threshold - focus on detecting products, not filtering noise
+    const EDGE_THRESHOLD = 5; // Very permissive - detect any product
+    
+    // DEBUG: Log edge detection
+    console.log(`📊 Edge Detection: edgeMean=${edgeMean.toFixed(2)} (threshold=${EDGE_THRESHOLD})`);
 
     // If edgeMean is extremely low, likely empty frame or pure background -> return no detections
     if (edgeMean < EDGE_THRESHOLD) {
@@ -781,6 +885,10 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
       }
       return base;
     }
+
+    console.log('✅ Proceeding with product detection');
+
+    // Product detection - no size limits, detect anything
 
     // If we have edges, attempt a conservative match to catalog based on shape (aspect) and color
     // Map aspect ratio to shape preference
@@ -988,10 +1096,13 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         finalScore = 0.20 * refBestScore + 0.80 * heuristicScore;
         console.log(`⚠️  ${p.id}: Screen mismatch! Ref=${refBestScore.toFixed(2)}, Heuristic=${heuristicScore.toFixed(2)}, Final=${finalScore.toFixed(2)}`);
       } else if (refBestScore > 0.85 && heuristicScore > 0.40) {
-        // Strong ref match AND reasonable heuristic - trust it
-        finalScore = 0.70 * refBestScore + 0.30 * heuristicScore;
-      } else if (refBestScore > 0.65 && heuristicScore > 0.35) {
+        // Strong ref match AND reasonable heuristic - ACCURACY PRIORITY
+        finalScore = 0.80 * refBestScore + 0.20 * heuristicScore; // Trust reference images more
+      } else if (refBestScore > 0.70 && heuristicScore > 0.30) {
         // Good ref match with decent heuristic - balanced
+        finalScore = 0.65 * refBestScore + 0.35 * heuristicScore; // Favor references
+      } else if (refBestScore > 0.50) {
+        // Moderate ref match - balanced approach
         finalScore = 0.50 * refBestScore + 0.50 * heuristicScore;
       } else if (refBestScore > 0) {
         // Weak ref match - heuristic dominates
@@ -1035,16 +1146,18 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
       console.log(`  ${i+1}. ${d.name} (${d.id}): Final=${(d.finalScore*100).toFixed(1)}% [Heuristic=${(d.heuristicScore*100).toFixed(1)}% Ref=${(d.refBestScore*100).toFixed(1)}%]`);
       console.log(`     Shape=${(d.shapeMatch*100).toFixed(0)}% Features=${(d.featureMatch*100).toFixed(0)}% Size=${(d.sizeMatch*100).toFixed(0)}%`);
     });
+    console.log(`\n🎯 Best score: ${(bestScore*100).toFixed(1)}% (threshold: 70%)`);
     
     // Reject if:
     // 1. No match found
     // 2. Confidence below 80%
     // 3. Very low edge detection (empty frame)
-    if (!best || confidence < 0.80 || edgeMean < 5) {
+    if (!best || confidence < 0.70 || edgeMean < 4) {
       const base = {
         success: true,
         filename: filename,
         timestamp: new Date().toISOString(),
+        humans: humans, // Still return person box even if no product detected
         detections: [],
         message: "no product detected"
       };
@@ -1056,16 +1169,21 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
           topMatches: diagnostics.slice(0, 3)
         };
       }
-      console.log('❌ No product detected (confidence:', (confidence * 100).toFixed(1) + '%)');
+      const reason = !best ? 'no match' : confidence < 0.75 ? `low confidence (${(confidence*100).toFixed(1)}%)` : `low edges (${edgeMean.toFixed(1)})`;
+      console.log(`❌ No product detected: ${reason}`);
       return base;
     }
     
     console.log('✅ Detected:', bp.name, '- Confidence:', (confidence * 100).toFixed(1) + '%');
+    
+    // Calculate product bounding box (SEPARATE from person)
+    const productBox = detectProductLocation(image, humanBox);
+    
     const result = {
       success: true,
       filename: filename,
       timestamp: new Date().toISOString(),
-      humans: humans,
+      humans: humans, // Person bounding box (if detected)
       detections: [
         {
           id: bp.id,
@@ -1081,7 +1199,7 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
           packaging: bp.packaging,
           uniqueFeatures: bp.uniqueFeatures,
           location: bp.location,
-          boundingBox: detectProductLocation(image, humanBox)
+          boundingBox: productBox // Product box ONLY (excludes person)
         }
       ]
     };
@@ -1108,6 +1226,31 @@ app.get('/api/catalog', (req, res) => {
     total: productDB.length,
     products: productDB
   });
+});
+
+app.get('/api/zones', (req, res) => {
+  res.json({
+    success: true,
+    total: productZones.length,
+    zones: productZones
+  });
+});
+
+app.post('/api/check-proximity', express.json(), (req, res) => {
+  try {
+    const { personBox } = req.body;
+    if (!personBox) {
+      return res.status(400).json({ success: false, error: 'No person box provided' });
+    }
+    
+    const proximityResult = checkPersonInZone(personBox);
+    res.json({
+      success: true,
+      ...proximityResult
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post('/api/detect', upload.single('image'), (req, res) => {
@@ -1138,6 +1281,72 @@ app.post('/api/detect', upload.single('image'), (req, res) => {
   })();
 });
 
+// New endpoint for base64 image upload (from frontend)
+app.post('/detect', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    if (!req.body.image) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'No image data provided' 
+      });
+    }
+
+    console.log('🖼️ Received base64 image from', req.body.source || 'unknown source');
+
+    // Convert base64 to buffer
+    const base64Data = req.body.image.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    // Save temporarily
+    const tempFilename = `upload-${Date.now()}.jpg`;
+    const tempPath = path.join('uploads', tempFilename);
+    fs.writeFileSync(tempPath, buffer);
+
+    // Analyze the image
+    const response = await analyzeImageAndDetect(tempPath, tempFilename, { debug: false });
+
+    // Clean up temp file
+    fs.unlinkSync(tempPath);
+
+    // Format response for frontend
+    if (response.detections && response.detections.length > 0) {
+      const detection = response.detections[0];
+      const product = productDB.find(p => p.id === detection.id);
+      
+      if (!product) {
+        console.error(`❌ Product not found in DB for ID: ${detection.id}`);
+        return res.json({
+          status: 'no_product_detected',
+          message: 'Product matched but not found in catalog'
+        });
+      }
+      
+      res.json({
+        status: 'success',
+        product: product,
+        confidence: detection.confidence,
+        boundingBox: detection.boundingBox,
+        processingTime: response.processingTime || 0
+      });
+      
+      console.log(`✅ Uploaded image matched: ${product.name} (${(detection.confidence * 100).toFixed(1)}%)`);
+    } else {
+      res.json({
+        status: 'no_product_detected',
+        message: 'Could not identify any known product in the image'
+      });
+      console.log('⚠️ No product detected in uploaded image');
+    }
+
+  } catch (err) {
+    console.error('Upload detection error:', err);
+    res.status(500).json({ 
+      status: 'error', 
+      message: err.message 
+    });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'Edge Insights Demo' });
 });
@@ -1152,6 +1361,7 @@ app.use((err, req, res, next) => {
 (async () => {
   try {
     loadProductCatalog();
+    loadProductZones();
     await loadReferenceSignatures();
     app.listen(PORT, () => {
       console.log(`

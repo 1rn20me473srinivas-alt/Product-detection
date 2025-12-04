@@ -251,6 +251,7 @@ body {
   background: linear-gradient(45deg, var(--primary), var(--accent)) border-box;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: destination-out;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   opacity: 0.3;
 }
@@ -344,6 +345,8 @@ body {
   text-align: center;
   cursor: pointer;
   transition: all 0.3s ease;
+  position: relative;
+  z-index: 1;
 }
 
 .upload-zone:hover {
@@ -357,7 +360,7 @@ body {
   transform: scale(1.02);
 }
 
-.upload-content {
+.upload-placeholder {
   pointer-events: none;
 }
 
@@ -701,6 +704,233 @@ body {
 .footer-subtext {
   font-size: 0.85em;
   color: var(--text-muted);
+}
+
+/* Upload Card Styles */
+.upload-card {
+  margin-top: 1rem;
+}
+
+.upload-content {
+  padding: 1.5rem;
+}
+
+.upload-zone {
+  position: relative;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: var(--bg-glass);
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-zone:hover {
+  border-color: var(--primary);
+  background: var(--bg-glass-hover);
+}
+
+.upload-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(240, 147, 251, 0.1);
+}
+
+.upload-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.upload-icon {
+  font-size: 3rem;
+  opacity: 0.6;
+}
+
+.upload-text {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.upload-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.upload-preview {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+#btnScanUpload,
+#btnClearUpload {
+  width: 100%;
+  margin-top: 1rem;
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  opacity: 0.9;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  opacity: 1;
+  transform: translateY(-2px);
+}
+
+/* Detection Result States */
+.detection-success {
+  padding: 1.5rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius);
+  border: 1px solid var(--success);
+}
+
+.success-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.success-icon {
+  font-size: 1.5rem;
+}
+
+.success-badge {
+  background: var(--gradient-success);
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.product-details {
+  margin-top: 1rem;
+}
+
+.product-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.product-meta {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.product-category {
+  background: var(--bg-glass-hover);
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.product-price {
+  color: var(--success);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.product-description {
+  margin-top: 1rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.confidence-bar {
+  margin-top: 1rem;
+}
+
+.confidence-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.confidence-value {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.confidence-track {
+  height: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.confidence-fill {
+  height: 100%;
+  background: var(--gradient-success);
+  transition: width 0.5s ease;
+}
+
+.no-match-state,
+.error-state {
+  padding: 2rem;
+  text-align: center;
+}
+
+.no-match-icon,
+.error-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  opacity: 0.6;
+}
+
+.no-match-title,
+.error-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.no-match-subtitle,
+.error-subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.detection-tips {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius-sm);
+  text-align: left;
+}
+
+.detection-tips strong {
+  color: var(--text-secondary);
+}
+
+.detection-tips ul {
+  margin-top: 0.5rem;
+  padding-left: 1.5rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.detection-tips li {
+  margin-bottom: 0.25rem;
 }
 
 /* Scrollbar Styling */

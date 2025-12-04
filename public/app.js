@@ -9,13 +9,16 @@ const overlayCtx = overlayCanvas.getContext('2d');
 const btnStart = document.getElementById('btnStart');
 const btnCapture = document.getElementById('btnCapture');
 const btnStop = document.getElementById('btnStop');
-const fileInput = document.getElementById('fileInput');
-const uploadArea = document.getElementById('uploadArea');
 const resultsEl = document.getElementById('results');
 const catalogEl = document.getElementById('catalog');
 const btnLoadCatalog = document.getElementById('btnLoadCatalog');
 const autoScanEl = document.getElementById('autoScan');
 const cameraStatusEl = document.getElementById('camera-status');
+const imageUpload = document.getElementById('imageUpload');
+const uploadZone = document.getElementById('uploadZone');
+const uploadPreview = document.getElementById('uploadPreview');
+const btnScanUpload = document.getElementById('btnScanUpload');
+const btnClearUpload = document.getElementById('btnClearUpload');
 
 // State
 let stream = null;
@@ -31,6 +34,13 @@ let lastDetectionTime = 0;
 
 // Product tracking to avoid re-scanning same products
 let trackedProducts = []; // [{ id, signature, bbox, lastSeen }]
+
+// Zone-based gating
+let productZones = [];
+let lastPersonBox = null;
+let personInZoneCount = 0; // Debounce counter
+const personInZoneThreshold = 2; // Require 2 consecutive frames
+let activeZone = null;
 let currentFrameSignature = null;
 
 // Initialize overlay canvas after DOM is ready
@@ -47,31 +57,70 @@ function initOverlayCanvas() {
   }
 }
 
-// Event Listeners
-btnStart.addEventListener('click', startCamera);
-btnCapture.addEventListener('click', captureAndDetect);
-btnStop.addEventListener('click', stopCamera);
-autoScanEl.addEventListener('change', toggleAutoScan);
-btnLoadCatalog.addEventListener('click', loadCatalog);
-autoScanEl.addEventListener('change', toggleAutoScan);
+// Event Listeners - Wait for DOM to be ready
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('🚀 DOM loaded, initializing event listeners...');
+  
+  // Camera event listeners
+  if (btnStart) btnStart.addEventListener('click', startCamera);
+  if (btnCapture) btnCapture.addEventListener('click', captureAndDetect);
+  if (btnStop) btnStop.addEventListener('click', stopCamera);
+  if (autoScanEl) autoScanEl.addEventListener('change', toggleAutoScan);
+  if (btnLoadCatalog) btnLoadCatalog.addEventListener('click', loadCatalog);
 
-// Drag and drop for upload
-uploadArea.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  uploadArea.classList.add('drag-over');
-});
-
-uploadArea.addEventListener('dragleave', () => {
-  uploadArea.classList.remove('drag-over');
-});
-
-uploadArea.addEventListener('drop', (e) => {
-  e.preventDefault();
-  uploadArea.classList.remove('drag-over');
-  const files = e.dataTransfer.files;
-  if (files.length > 0) {
-    processImage(files[0]);
+  // Image upload event listeners
+  if (imageUpload) {
+    // Make file input accessible
+    imageUpload.removeAttribute('capture');
+    imageUpload.style.display = 'none';
+    
+    imageUpload.addEventListener('change', handleImageSelect);
+    console.log('✅ Image input change listener attached');
+  } else {
+    console.error('❌ File input not found');
   }
+  
+  if (uploadZone) {
+    // Add drag and drop handlers
+    uploadZone.addEventListener('dragover', handleDragOver);
+    uploadZone.addEventListener('dragleave', handleDragLeave);
+    uploadZone.addEventListener('drop', handleDrop);
+    console.log('✅ Upload zone drag handlers attached');
+  }
+  
+  if (btnScanUpload) {
+    btnScanUpload.addEventListener('click', scanUploadedImage);
+    console.log('✅ Scan button listener attached');
+  }
+  if (btnClearUpload) {
+    btnClearUpload.addEventListener('click', clearUploadedImage);
+    console.log('✅ Clear button listener attached');
+  }
+
+  // Drag and drop for upload
+  if (uploadZone) {
+    uploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadZone.classList.add('drag-over');
+    });
+
+    uploadZone.addEventListener('dragleave', () => {
+      uploadZone.classList.remove('drag-over');
+    });
+
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length > 0 && files[0].type.startsWith('image/')) {
+        handleImageFile(files[0]);
+      }
+    });
+  }
+
+  console.log('✅ Event listeners initialized');
+  initOverlayCanvas();
+  loadCatalog();
 });
 
 // Camera Functions
@@ -211,7 +260,14 @@ function startAutoScan() {
   
   stopAutoScan(); // Clear any existing interval
   
-  // Smart scanning: detect motion AND check if product changed
+  // Load zones on first auto-scan
+  if (productZones.length === 0) {
+    loadZones();
+  }
+  
+  // GATED SCANNING: Only detect when person is in zone
+  console.log('🔄 Auto-scan started - person-gated mode');
+  
   scanInterval = setInterval(() => {
     if (!video.videoWidth || !video.videoHeight) return;
 
@@ -223,35 +279,136 @@ function startAutoScan() {
 
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, w, h);
+    
+    // Draw zones overlay
+    drawZones();
 
-    const imageData = ctx.getImageData(0, 0, w, h);
-    const hasMotion = detectMotion(imageData.data, w, h);
-
-    if (hasMotion) {
-      // Check if frame content changed (new product appeared)
-      const newSignature = computeFrameSignature(imageData.data, w, h);
-      const frameChanged = !signaturesMatch(currentFrameSignature, newSignature);
-      
-      if (frameChanged) {
-        currentFrameSignature = newSignature;
+    // Check for person detection first
+    checkPersonAndGate().then(shouldDetect => {
+      if (shouldDetect) {
+        // Show loading state
+        cameraStatusEl.textContent = 'Person in zone - analyzing...';
+        cameraStatusEl.classList.add('active');
+        console.log('✅ Person in zone, running detection...');
         
-        const now = Date.now();
-        if (now - lastDetectionTime < detectionCooldown) return;
-        lastDetectionTime = now;
-
-        console.log('📸 New product detected - scanning frame...');
-        
-        // Use higher quality for product recognition
+        // Use MAXIMUM quality for best accuracy
         canvas.toBlob((blob) => {
           sendDetectionRequest(blob, 'autoscan.jpg');
-        }, 'image/jpeg', 0.95);
+        }, 'image/jpeg', 0.98); // 98% quality for precision
       } else {
-        console.log('👁️ Product moving - tracking without re-scan');
-        // Product is just moving - update bounding boxes without full detection
-        updateTrackingBoxes();
+        // Idle state - no person in zone
+        cameraStatusEl.textContent = 'Idle - waiting for person in product zone';
+        cameraStatusEl.classList.remove('active', 'error');
       }
+    });
+    
+  }, 2000); // Check every 2 seconds
+}
+
+// Check if person is in zone before allowing detection
+async function checkPersonAndGate() {
+  try {
+    // Simple person detection using canvas analysis
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    // Detect motion/presence (basic heuristic)
+    const hasMotion = detectMotionInFrame(imageData);
+    
+    if (!hasMotion) {
+      personInZoneCount = 0;
+      activeZone = null;
+      return false;
     }
-  }, 500); // check twice per second
+    
+    // Estimate person box (center of motion)
+    const personBox = estimatePersonBox(canvas.width, canvas.height);
+    
+    // Check proximity to zones
+    if (productZones.length === 0) {
+      // No zones configured, allow detection
+      return true;
+    }
+    
+    const proximityResult = checkPersonProximityLocal(personBox);
+    
+    if (proximityResult.inZone) {
+      personInZoneCount++;
+      activeZone = proximityResult;
+      
+      // Require debounce threshold
+      if (personInZoneCount >= personInZoneThreshold) {
+        console.log(`👤 Person in ${proximityResult.zoneName}`);
+        return true;
+      }
+    } else {
+      personInZoneCount = 0;
+      activeZone = null;
+    }
+    
+    return false;
+  } catch (err) {
+    console.error('Person check error:', err);
+    return false; // Fail closed - don't detect if check fails
+  }
+}
+
+// Local proximity check (client-side)
+function checkPersonProximityLocal(personBox) {
+  if (!personBox || !productZones.length) return { inZone: false };
+  
+  const personCenterX = personBox.x + (personBox.width / 2);
+  const personCenterY = personBox.y + (personBox.height / 2);
+  
+  for (const zone of productZones) {
+    const overlapsX = personCenterX >= zone.x && personCenterX <= (zone.x + zone.width);
+    const overlapsY = personCenterY >= zone.y && personCenterY <= (zone.y + zone.height);
+    
+    if (overlapsX && overlapsY) {
+      return {
+        inZone: true,
+        productId: zone.productId,
+        zoneName: zone.name
+      };
+    }
+  }
+  
+  return { inZone: false };
+}
+
+// Estimate person bounding box (simple heuristic - center of frame)
+function estimatePersonBox(width, height) {
+  // Assume person is in center 60% of frame
+  return {
+    x: width * 0.2,
+    y: height * 0.1,
+    width: width * 0.6,
+    height: height * 0.8
+  };
+}
+
+// Detect motion in current frame
+function detectMotionInFrame(imageData) {
+  if (!previousFrame) {
+    previousFrame = imageData.data.slice();
+    return true; // Assume motion on first frame
+  }
+  
+  const data = imageData.data;
+  let diffCount = 0;
+  const threshold = 30;
+  const sampleRate = 100; // Check every 100th pixel for speed
+  
+  for (let i = 0; i < data.length; i += sampleRate * 4) {
+    const diff = Math.abs(data[i] - previousFrame[i]);
+    if (diff > threshold) diffCount++;
+  }
+  
+  previousFrame = data.slice();
+  
+  // If more than 5% of sampled pixels changed significantly
+  const motionThreshold = (data.length / (sampleRate * 4)) * 0.05;
+  return diffCount > motionThreshold;
 }
 
 function stopAutoScan() {
@@ -299,13 +456,15 @@ async function sendDetectionRequest(fileOrBlob, filename = 'image.jpg') {
       drawBoundingBoxes(data, true);
     }
     
-    cameraStatusEl.textContent = 'Done';
-    cameraStatusEl.classList.add('active');
-    setTimeout(() => {
-      if (stream) {
-        cameraStatusEl.textContent = 'Live';
-      }
-    }, 1000);
+    // Update status based on detection result
+    if (data.detections && data.detections.length > 0) {
+      cameraStatusEl.textContent = `✓ ${data.detections[0].type} (${(data.detections[0].confidence*100).toFixed(0)}%)`;
+      cameraStatusEl.classList.remove('error');
+      cameraStatusEl.classList.add('active');
+    } else {
+      cameraStatusEl.textContent = 'Ready - No product detected';
+      cameraStatusEl.classList.remove('error', 'active');
+    }
     
     displayDetectionResults(data, responseTime);
     updateStats(data, responseTime);
@@ -343,12 +502,12 @@ function drawBoundingBoxes(data, isUpload = false) {
   // Clear previous boxes
   targetCtx.clearRect(0, 0, w, h);
   
-  // Draw humans (red boxes)
+  // Draw humans (blue boxes - person outline)
   if (data.humans && data.humans.length > 0) {
-    targetCtx.strokeStyle = '#ff0000';
-    targetCtx.lineWidth = 4;
-    targetCtx.font = 'bold 20px Arial';
-    targetCtx.fillStyle = '#ff0000';
+    targetCtx.strokeStyle = '#2196f3'; // Blue for person
+    targetCtx.lineWidth = 3;
+    targetCtx.font = 'bold 18px Arial';
+    targetCtx.fillStyle = '#2196f3';
     
     data.humans.forEach((human, idx) => {
       const bbox = human.boundingBox;
@@ -358,14 +517,19 @@ function drawBoundingBoxes(data, isUpload = false) {
       const height = bbox.height * h;
       
       targetCtx.strokeRect(x, y, width, height);
-      targetCtx.fillText(`👤 HUMAN`, x + 10, y + 30);
+      
+      // Person label with background
+      targetCtx.fillStyle = 'rgba(33, 150, 243, 0.7)';
+      targetCtx.fillRect(x, y - 30, 120, 30);
+      targetCtx.fillStyle = '#ffffff';
+      targetCtx.fillText(`👤 Person`, x + 10, y - 8);
     });
   }
   
-  // Draw products (green boxes)
+  // Draw products (lime green boxes - product only)
   if (data.detections && data.detections.length > 0) {
-    targetCtx.lineWidth = 4;
-    targetCtx.font = 'bold 18px Arial';
+    targetCtx.lineWidth = 5;
+    targetCtx.font = 'bold 20px Arial';
     
     data.detections.forEach((product, idx) => {
       const bbox = product.boundingBox;
@@ -374,23 +538,25 @@ function drawBoundingBoxes(data, isUpload = false) {
       const width = bbox.width * w;
       const height = bbox.height * h;
       
-      // Product box in green
+      // Product box in bright green (separate from person)
       targetCtx.strokeStyle = '#00ff00';
       targetCtx.fillStyle = '#00ff00';
       targetCtx.strokeRect(x, y, width, height);
       
       // Product label
-      const label = `${product.id}: ${product.type}`;
+      const label = `${product.type}`;
       const confidence = `${(product.confidence * 100).toFixed(1)}%`;
       
       // Background for text
-      targetCtx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-      targetCtx.fillRect(x, y - 50, Math.max(200, targetCtx.measureText(label).width + 20), 50);
+      targetCtx.fillStyle = 'rgba(0, 255, 0, 0.85)';
+      targetCtx.fillRect(x, y - 55, Math.max(220, targetCtx.measureText(label).width + 20), 55);
       
       // Text
       targetCtx.fillStyle = '#000000';
-      targetCtx.fillText(label, x + 10, y - 25);
-      targetCtx.fillText(confidence, x + 10, y - 5);
+      targetCtx.font = 'bold 22px Arial';
+      targetCtx.fillText(label, x + 10, y - 28);
+      targetCtx.font = 'bold 18px Arial';
+      targetCtx.fillText(confidence, x + 10, y - 6);
     });
   }
   
@@ -648,19 +814,78 @@ async function loadCatalog() {
 }
 
 function displayCatalog(products) {
-  console.log('🎨 Displaying catalog with', products.length, 'products');
+  if (!catalogEl) {
+    console.error('❌ Catalog element not found');
+    return;
+  }
+  
+  console.log('🎨 Displaying catalog with', products.length, 'products:');
+  products.forEach(p => console.log(`  - ${p.id}: ${p.name} ($${p.price})` ));
+  
   catalogEl.innerHTML = '';
+
+  if (!products || products.length === 0) {
+    catalogEl.innerHTML = '<p class="catalog-placeholder">No products in catalog</p>';
+    return;
+  }
 
   products.forEach(product => {
     const item = document.createElement('div');
     item.className = 'catalog-item';
     item.innerHTML = `
       <div class="catalog-name">${product.name}</div>
-      <div class="catalog-price">$${product.price}</div>
+      <div class="catalog-price">₹${product.price.toLocaleString('en-IN')}</div>
       <div class="catalog-category">${product.category}</div>
     `;
     item.title = `${product.name} - ${product.type}`;
     catalogEl.appendChild(item);
+  });
+}
+
+// Load product zones
+async function loadZones() {
+  try {
+    const response = await fetch('/api/zones');
+    const data = await response.json();
+    
+    if (data.success && data.zones) {
+      productZones = data.zones;
+      console.log(`✅ Loaded ${productZones.length} product zones`);
+      drawZones(); // Draw zones on canvas
+    }
+  } catch (err) {
+    console.error('Failed to load zones:', err);
+  }
+}
+
+// Draw zone overlays on canvas
+function drawZones() {
+  if (!canvas || !productZones.length) return;
+  
+  const ctx = canvas.getContext('2d');
+  const videoWidth = video.videoWidth || 640;
+  const videoHeight = video.videoHeight || 480;
+  
+  // Scale zones to canvas size
+  const scaleX = canvas.width / videoWidth;
+  const scaleY = canvas.height / videoHeight;
+  
+  productZones.forEach(zone => {
+    const x = zone.x * scaleX;
+    const y = zone.y * scaleY;
+    const w = zone.width * scaleX;
+    const h = zone.height * scaleY;
+    
+    // Different color if zone is active
+    const isActive = activeZone && activeZone.productId === zone.productId;
+    ctx.strokeStyle = isActive ? '#00ff00' : '#888888';
+    ctx.lineWidth = isActive ? 3 : 2;
+    ctx.strokeRect(x, y, w, h);
+    
+    // Label
+    ctx.fillStyle = isActive ? '#00ff00' : '#ffffff';
+    ctx.font = '14px Arial';
+    ctx.fillText(zone.name || zone.productId, x + 5, y + 20);
   });
 }
 
@@ -692,10 +917,7 @@ function updateStats(data, responseTime) {
   }
 }
 
-// Initialize
-console.log('🚀 Intel Edge Insights Demo initialized');
-initOverlayCanvas(); // Try to initialize overlay canvas immediately
-loadCatalog(); // Auto-load catalog on page load
+// Initialize - moved to DOMContentLoaded above
 
 // Check camera availability on load
 (async function checkCameraSupport() {
@@ -745,3 +967,265 @@ loadCatalog(); // Auto-load catalog on page load
     console.error('Error checking camera devices:', err);
   }
 })();
+
+// Image Upload Functions
+function handleDragOver(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  uploadZone.classList.add('drag-over');
+}
+
+function handleDragLeave(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  uploadZone.classList.remove('drag-over');
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  uploadZone.classList.remove('drag-over');
+  
+  const files = e.dataTransfer.files;
+  console.log('📂 File dropped:', files.length, 'files');
+  
+  if (files.length > 0) {
+    const file = files[0];
+    if (file.type.startsWith('image/')) {
+      console.log('✅ Valid image dropped:', file.name, file.type);
+      // Manually trigger file input change
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      imageUpload.files = dataTransfer.files;
+      handleImageFile(file);
+    } else {
+      console.error('❌ Invalid file type dropped:', file.type);
+      alert('Please drop an image file (JPG, PNG, etc.)');
+    }
+  }
+}
+
+function handleImageSelect(e) {
+  console.log('📂 handleImageSelect called', e.target.files);
+  const file = e.target.files[0];
+  if (file && file.type.startsWith('image/')) {
+    console.log('✅ Valid image file:', file.name, file.type, file.size, 'bytes');
+    handleImageFile(file);
+  } else {
+    console.error('❌ Invalid file type:', file?.type);
+  }
+}
+
+function handleImageFile(file) {
+  if (!uploadPreview || !uploadZone || !btnScanUpload || !btnClearUpload) {
+    console.error('❌ Upload elements not found');
+    return;
+  }
+  
+  console.log('📂 Loading image:', file.name);
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    uploadPreview.src = e.target.result;
+    uploadPreview.style.display = 'block';
+    const placeholder = uploadZone.querySelector('.upload-placeholder');
+    if (placeholder) placeholder.style.display = 'none';
+    btnScanUpload.disabled = false;
+    btnClearUpload.style.display = 'inline-flex';
+    console.log('✅ Image loaded successfully:', file.name);
+  };
+  reader.onerror = (err) => {
+    console.error('❌ Failed to read image:', err);
+    alert('Failed to load image. Please try another file.');
+  };
+  reader.readAsDataURL(file);
+}
+
+async function scanUploadedImage() {
+  if (!uploadPreview || !uploadPreview.src) {
+    console.error('❌ No image to scan');
+    alert('Please select an image first');
+    return;
+  }
+  
+  console.log('🔍 Starting image scan...');
+  btnScanUpload.disabled = true;
+  btnScanUpload.innerHTML = '<span class="btn-icon">⏳</span><span>Scanning...</span>';
+  
+  try {
+    // Create a temporary canvas to convert image to base64
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+    const img = new Image();
+    
+    img.crossOrigin = 'anonymous'; // Allow cross-origin if needed
+    
+    img.onerror = () => {
+      console.error('❌ Failed to load image for scanning');
+      throw new Error('Failed to load image for scanning');
+    };
+    
+    img.onload = async () => {
+      try {
+        console.log('📐 Image loaded:', img.width, 'x', img.height);
+        tempCanvas.width = img.width;
+        tempCanvas.height = img.height;
+        tempCtx.drawImage(img, 0, 0);
+        
+        const imageData = tempCanvas.toDataURL('image/jpeg', 0.98);
+        console.log('📤 Sending image to server... (size:', imageData.length, 'chars)');
+        
+        // Send to server for detection
+        const response = await fetch('/detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            image: imageData,
+            source: 'upload'
+          })
+        });
+        
+        console.log('📡 Server responded with status:', response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('❌ Server error response:', errorText);
+          throw new Error(`Server error: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('📥 Server response:', result);
+        
+        // Display results
+        displayUploadResults(result);
+        
+        // Scroll to results
+        if (resultsEl) {
+          resultsEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        
+      } catch (innerErr) {
+        console.error('❌ Inner scan error:', innerErr);
+        throw innerErr;
+      } finally {
+        btnScanUpload.disabled = false;
+        btnScanUpload.innerHTML = '<span class="btn-icon">🔍</span><span>Scan Uploaded Image</span>';
+      }
+    };
+    
+    img.src = uploadPreview.src;
+    
+  } catch (err) {
+    console.error('❌ Upload scan error:', err);
+    if (resultsEl) {
+      resultsEl.innerHTML = `
+        <div class="error-state">
+          <div class="error-icon">❌</div>
+          <p class="error-title">Scan Failed</p>
+          <p class="error-subtitle">${err.message}</p>
+        </div>
+      `;
+    }
+    btnScanUpload.disabled = false;
+    btnScanUpload.innerHTML = '<span class="btn-icon">🔍</span><span>Scan Uploaded Image</span>';
+  }
+}
+
+function clearUploadedImage() {
+  if (uploadPreview) {
+    uploadPreview.src = '';
+    uploadPreview.style.display = 'none';
+  }
+  if (uploadZone) {
+    const placeholder = uploadZone.querySelector('.upload-placeholder');
+    if (placeholder) placeholder.style.display = 'flex';
+  }
+  if (btnScanUpload) btnScanUpload.disabled = true;
+  if (btnClearUpload) btnClearUpload.style.display = 'none';
+  if (imageUpload) imageUpload.value = '';
+  if (resultsEl) {
+    resultsEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <p class="empty-title">No Detections Yet</p>
+        <p class="empty-subtitle">Capture an image or enable auto-scan</p>
+      </div>
+    `;
+  }
+  console.log('🗑️ Upload cleared');
+}
+
+function displayUploadResults(result) {
+  console.log('📊 displayUploadResults called with:', result);
+  
+  if (!resultsEl) {
+    console.error('❌ Results element not found!');
+    return;
+  }
+  
+  if (result.status === 'no_product_detected') {
+    console.log('ℹ️ No product detected in image');
+    resultsEl.innerHTML = `
+      <div class="no-match-state">
+        <div class="no-match-icon">🔍</div>
+        <p class="no-match-title">No Product Detected</p>
+        <p class="no-match-subtitle">Could not identify a known product in this image</p>
+        <div class="detection-tips">
+          <p><strong>Tips:</strong></p>
+          <ul>
+            <li>Ensure good lighting</li>
+            <li>Product should be clearly visible</li>
+            <li>Avoid blurry images</li>
+            <li>Try a different angle</li>
+          </ul>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  
+  if (result.status === 'success' && result.product) {
+    const conf = (result.confidence * 100).toFixed(1);
+    console.log('✅ Displaying product:', result.product.name, `${conf}% confidence`);
+    
+    resultsEl.innerHTML = `
+      <div class="detection-success">
+        <div class="success-header">
+          <span class="success-icon">✅</span>
+          <span class="success-badge">Product Found</span>
+        </div>
+        <div class="product-details">
+          <h3 class="product-name">${result.product.name}</h3>
+          <div class="product-meta">
+            <span class="product-category">${result.product.category}</span>
+            <span class="product-price">₹${result.product.price.toLocaleString('en-IN')}</span>
+          </div>
+          <div class="confidence-bar">
+            <div class="confidence-label">
+              <span>Confidence</span>
+              <span class="confidence-value">${conf}%</span>
+            </div>
+            <div class="confidence-track">
+              <div class="confidence-fill" style="width: ${conf}%"></div>
+            </div>
+          </div>
+          ${result.product.description ? `<p class="product-description">${result.product.description}</p>` : ''}
+        </div>
+      </div>
+    `;
+    
+    // Update stats
+    detectionHistory.push(result.confidence);
+    updateStats();
+    
+    console.log('✅ Upload detection displayed successfully');
+  } else {
+    console.error('❌ Unexpected result format:', result);
+    resultsEl.innerHTML = `
+      <div class="error-state">
+        <div class="error-icon">⚠️</div>
+        <p class="error-title">Unexpected Response</p>
+        <p class="error-subtitle">Server returned an unexpected format</p>
+      </div>
+    `;
+  }
+}

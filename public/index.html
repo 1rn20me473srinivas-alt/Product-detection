@@ -68,7 +68,34 @@
           </div>
         </div>
 
-        <!-- Upload Section Removed - Live Camera Only -->
+        <!-- Image Upload Card (Secondary Option) -->
+        <div class="glass-card upload-card">
+          <div class="card-header">
+            <h3 class="card-subtitle">
+              <span class="title-icon">🖼️</span>
+              Image Upload
+            </h3>
+          </div>
+          <div class="upload-content">
+            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('imageUpload').click();">
+              <input type="file" id="imageUpload" accept="image/*" capture="environment" style="display:none;">
+              <div class="upload-placeholder">
+                <span class="upload-icon">📤</span>
+                <p class="upload-text">Click or drag image here</p>
+                <p class="upload-hint">Scan product from saved image</p>
+              </div>
+              <img id="uploadPreview" class="upload-preview" style="display:none;">
+            </div>
+            <button id="btnScanUpload" class="btn-modern btn-secondary" disabled>
+              <span class="btn-icon">🔍</span>
+              <span>Scan Uploaded Image</span>
+            </button>
+            <button id="btnClearUpload" class="btn-modern btn-outline" style="display:none;">
+              <span class="btn-icon">✕</span>
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
 
         <!-- Settings Card -->
         <div class="glass-card settings-card">

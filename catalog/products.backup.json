@@ -1,0 +1,230 @@
+﻿[
+    {
+        "size":  "large",
+        "id":  "p2",
+        "category":  "Sports",
+        "shape":  "rectangular",
+        "packaging":  "carrying strap",
+        "characteristics":  [
+                                "mat",
+                                "rubber",
+                                "rolled"
+                            ],
+        "references":  [
+                           "references/p2/p2_ref_0.jpg",
+                           "references/p2/p2_ref_1.jpg",
+                           "references/p2/p2_ref_2.jpg"
+                       ],
+        "name":  "Yoga Mat",
+        "type":  "Exercise Equipment",
+        "price":  45.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  false,
+                                   "reflectivity":  false,
+                                   "circularElements":  0,
+                                   "hasText":  false,
+                                   "hasTransparency":  false,
+                                   "uniformity":  0.9,
+                                   "isMetallic":  false
+                               },
+        "uniqueFeatures":  [
+                               "non-slip",
+                               "eco-friendly",
+                               "6mm thick"
+                           ],
+        "texture":  "textured",
+        "location":  "aisle-2",
+        "color":  "purple"
+    },
+    {
+        "size":  "small",
+        "id":  "p4",
+        "category":  "Electronics",
+        "shape":  "square",
+        "packaging":  "box",
+        "characteristics":  [
+                                "watch",
+                                "digital display",
+                                "band"
+                            ],
+        "references":  [
+                           "references/p4/p4_ref_0.jpg",
+                           "references/p4/p4_ref_1.jpg",
+                           "references/p4/p4_ref_2.jpg"
+                       ],
+        "name":  "Smartwatch Fitness Tracker",
+        "type":  "Wearable",
+        "price":  199.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  true,
+                                   "reflectivity":  false,
+                                   "circularElements":  0.2,
+                                   "hasText":  false,
+                                   "hasTransparency":  false,
+                                   "uniformity":  0.7,
+                                   "isMetallic":  false
+                               },
+        "uniqueFeatures":  [
+                               "heart rate monitor",
+                               "GPS",
+                               "waterproof"
+                           ],
+        "texture":  "matte",
+        "location":  "aisle-4",
+        "color":  "black"
+    },
+    {
+        "size":  "small",
+        "id":  "p5",
+        "category":  "Electronics",
+        "shape":  "oval",
+        "packaging":  "case",
+        "characteristics":  [
+                                "earbuds",
+                                "charging case",
+                                "wireless"
+                            ],
+        "references":  [
+                           "references/p5/p5_ref_0.jpg",
+                           "references/p5/p5_ref_1.jpg",
+                           "references/p5/p5_ref_2.jpg"
+                       ],
+        "name":  "Wireless Earbuds",
+        "type":  "Audio",
+        "price":  89.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  false,
+                                   "reflectivity":  true,
+                                   "circularElements":  0.5,
+                                   "hasText":  false,
+                                   "hasTransparency":  false,
+                                   "uniformity":  0.9,
+                                   "isMetallic":  false
+                               },
+        "uniqueFeatures":  [
+                               "noise cancellation",
+                               "30hr battery",
+                               "touch control"
+                           ],
+        "texture":  "glossy",
+        "location":  "aisle-5",
+        "color":  "white"
+    },
+    {
+        "size":  "medium",
+        "id":  "p9",
+        "category":  "Drinkware",
+        "shape":  "cylindrical",
+        "packaging":  "box",
+        "characteristics":  [
+                                "stainless steel",
+                                "insulated",
+                                "reusable"
+                            ],
+        "references":  [
+                           "references/p9/p9_ref_0.jpg",
+                           "references/p9/p9_ref_1.jpg",
+                           "references/p9/p9_ref_2.jpg"
+                       ],
+        "name":  "Stainless Steel Water Bottle",
+        "type":  "Water Bottle",
+        "price":  24.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  false,
+                                   "reflectivity":  false,
+                                   "circularElements":  0.4,
+                                   "hasText":  false,
+                                   "hasTransparency":  false,
+                                   "uniformity":  0.95,
+                                   "isMetallic":  true
+                               },
+        "uniqueFeatures":  [
+                               "keeps cold 24hrs",
+                               "leak-proof cap",
+                               "wide mouth"
+                           ],
+        "texture":  "brushed metal",
+        "location":  "aisle-9",
+        "color":  "silver"
+    },
+    {
+        "size":  "small",
+        "id":  "p10",
+        "category":  "Electronics",
+        "shape":  "rectangular",
+        "packaging":  "premium box",
+        "characteristics":  [
+                                "touchscreen",
+                                "glass",
+                                "metal frame"
+                            ],
+        "references":  [
+                           "references/p10/p10_ref_0.jpg",
+                           "references/p10/p10_ref_1.jpg",
+                           "references/p10/p10_ref_2.jpg"
+                       ],
+        "name":  "Smartphone",
+        "type":  "Mobile Device",
+        "price":  799.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  true,
+                                   "reflectivity":  true,
+                                   "circularElements":  0.3,
+                                   "hasText":  false,
+                                   "hasTransparency":  false,
+                                   "uniformity":  0.8,
+                                   "isMetallic":  false
+                               },
+        "uniqueFeatures":  [
+                               "5G enabled",
+                               "triple camera",
+                               "wireless charging"
+                           ],
+        "texture":  "glossy",
+        "location":  "aisle-10",
+        "color":  "black"
+    },
+    {
+        "size":  "small",
+        "id":  "p11",
+        "category":  "Fragrance",
+        "shape":  "rectangular",
+        "packaging":  "gift box",
+        "characteristics":  [
+                                "glass bottle",
+                                "spray nozzle",
+                                "luxury"
+                            ],
+        "references":  [
+                           "references/p11/p11_ref_0.jpg",
+                           "references/p11/p11_ref_1.jpg",
+                           "references/p11/p11_ref_2.jpg"
+                       ],
+        "name":  "Perfume Bottle",
+        "type":  "Eau de Parfum",
+        "price":  89.99,
+        "detectableFeatures":  {
+                                   "hasCompartments":  false,
+                                   "hasScreen":  false,
+                                   "reflectivity":  true,
+                                   "circularElements":  0.2,
+                                   "hasText":  true,
+                                   "hasTransparency":  true,
+                                   "uniformity":  0.5,
+                                   "isMetallic":  false
+                               },
+        "uniqueFeatures":  [
+                               "designer fragrance",
+                               "long lasting",
+                               "elegant design"
+                           ],
+        "texture":  "glossy",
+        "location":  "aisle-11",
+        "color":  "emerald"
+    }
+]
