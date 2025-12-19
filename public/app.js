@@ -20,6 +20,9 @@ const uploadPreview = document.getElementById('uploadPreview');
 const btnScanUpload = document.getElementById('btnScanUpload');
 const btnClearUpload = document.getElementById('btnClearUpload');
 
+// Single detection region (normalized) covering ~85% of the frame
+const detectionRegion = { x: 0.075, y: 0.075, width: 0.85, height: 0.85 };
+
 // State
 let stream = null;
 let autoScan = false;
@@ -27,6 +30,7 @@ let scanInterval = null;
 let detectionHistory = [];
 let totalResponseTime = 0;
 let previousFrame = null;
+let previousFrameRegion = null; // motion baseline inside detection box
 let motionStabilityCount = 0;
 const motionStabilityRequired = 1; // require 1 frame of motion
 const detectionCooldown = 1500; // ms between detection requests
@@ -35,7 +39,7 @@ let lastDetectionTime = 0;
 // Product tracking to avoid re-scanning same products
 let trackedProducts = []; // [{ id, signature, bbox, lastSeen }]
 
-// Zone-based gating
+// Zone-based gating (unused in single-box mode but kept for compatibility)
 let productZones = [];
 let lastPersonBox = null;
 let personInZoneCount = 0; // Debounce counter
@@ -260,13 +264,7 @@ function startAutoScan() {
   
   stopAutoScan(); // Clear any existing interval
   
-  // Load zones on first auto-scan
-  if (productZones.length === 0) {
-    loadZones();
-  }
-  
-  // GATED SCANNING: Only detect when person is in zone
-  console.log('🔄 Auto-scan started - person-gated mode');
+  console.log('🔄 Auto-scan started - motion gated inside detection box');
   
   scanInterval = setInterval(() => {
     if (!video.videoWidth || !video.videoHeight) return;
@@ -280,27 +278,25 @@ function startAutoScan() {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, w, h);
     
-    // Draw zones overlay
-    drawZones();
+    // Draw single detection region overlay
+    drawDetectionRegion();
 
-    // Check for person detection first
-    checkPersonAndGate().then(shouldDetect => {
-      if (shouldDetect) {
-        // Show loading state
-        cameraStatusEl.textContent = 'Person in zone - analyzing...';
-        cameraStatusEl.classList.add('active');
-        console.log('✅ Person in zone, running detection...');
-        
-        // Use MAXIMUM quality for best accuracy
-        canvas.toBlob((blob) => {
-          sendDetectionRequest(blob, 'autoscan.jpg');
-        }, 'image/jpeg', 0.98); // 98% quality for precision
-      } else {
-        // Idle state - no person in zone
-        cameraStatusEl.textContent = 'Idle - waiting for person in product zone';
-        cameraStatusEl.classList.remove('active', 'error');
-      }
-    });
+    const now = Date.now();
+    const roi = getDetectionRegionPixels();
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const hasMotion = detectMotionInFrame(imageData, roi);
+
+    if (hasMotion && (now - lastDetectionTime) > detectionCooldown) {
+      lastDetectionTime = now;
+      cameraStatusEl.textContent = 'Motion in box - analyzing...';
+      cameraStatusEl.classList.add('active');
+      canvas.toBlob((blob) => {
+        sendDetectionRequest(blob, 'autoscan.jpg');
+      }, 'image/jpeg', 0.98); // high quality for accuracy
+    } else {
+      cameraStatusEl.textContent = 'Idle - waiting for motion in box';
+      cameraStatusEl.classList.remove('active', 'error');
+    }
     
   }, 2000); // Check every 2 seconds
 }
@@ -387,28 +383,64 @@ function estimatePersonBox(width, height) {
   };
 }
 
-// Detect motion in current frame
-function detectMotionInFrame(imageData) {
-  if (!previousFrame) {
-    previousFrame = imageData.data.slice();
-    return true; // Assume motion on first frame
-  }
-  
+// Detect motion; if roi provided, only consider that region
+function detectMotionInFrame(imageData, roi = null) {
   const data = imageData.data;
-  let diffCount = 0;
-  const threshold = 30;
-  const sampleRate = 100; // Check every 100th pixel for speed
-  
-  for (let i = 0; i < data.length; i += sampleRate * 4) {
-    const diff = Math.abs(data[i] - previousFrame[i]);
-    if (diff > threshold) diffCount++;
+  const width = imageData.width;
+  const height = imageData.height;
+
+  // Full-frame mode (fallback)
+  if (!roi) {
+    if (!previousFrame) {
+      previousFrame = data.slice();
+      return true;
+    }
+    let diffCount = 0;
+    const threshold = 30;
+    const sampleRate = 100; // Check every 100th pixel for speed
+    for (let i = 0; i < data.length; i += sampleRate * 4) {
+      const diff = Math.abs(data[i] - previousFrame[i]);
+      if (diff > threshold) diffCount++;
+    }
+    previousFrame = data.slice();
+    const motionThreshold = (data.length / (sampleRate * 4)) * 0.05;
+    return diffCount > motionThreshold;
   }
-  
-  previousFrame = data.slice();
-  
-  // If more than 5% of sampled pixels changed significantly
-  const motionThreshold = (data.length / (sampleRate * 4)) * 0.05;
-  return diffCount > motionThreshold;
+
+  // ROI mode: sample only inside detection box
+  const startX = Math.max(0, Math.floor(roi.x));
+  const startY = Math.max(0, Math.floor(roi.y));
+  const endX = Math.min(width, Math.floor(roi.x + roi.width));
+  const endY = Math.min(height, Math.floor(roi.y + roi.height));
+  const sampleStride = 4; // pixels to skip horizontally/vertically
+  const threshold = 25;
+  let diffs = 0;
+  let samples = 0;
+
+  const currentSamples = [];
+  for (let y = startY; y < endY; y += sampleStride) {
+    for (let x = startX; x < endX; x += sampleStride) {
+      const idx = (y * width + x) * 4;
+      const lum = data[idx];
+      currentSamples.push(lum);
+    }
+  }
+
+  if (!previousFrameRegion) {
+    previousFrameRegion = currentSamples.slice();
+    return true;
+  }
+
+  const len = Math.min(currentSamples.length, previousFrameRegion.length);
+  for (let i = 0; i < len; i++) {
+    if (Math.abs(currentSamples[i] - previousFrameRegion[i]) > threshold) diffs++;
+  }
+  samples = len;
+  previousFrameRegion = currentSamples.slice();
+
+  // Motion if more than 5% of sampled pixels changed
+  const motionThreshold = samples * 0.05;
+  return diffs > motionThreshold;
 }
 
 function stopAutoScan() {
@@ -462,7 +494,8 @@ async function sendDetectionRequest(fileOrBlob, filename = 'image.jpg') {
       cameraStatusEl.classList.remove('error');
       cameraStatusEl.classList.add('active');
     } else {
-      cameraStatusEl.textContent = 'Ready - No product detected';
+      const msg = data.message || 'No matching product detected';
+      cameraStatusEl.textContent = `Ready - ${msg}`;
       cameraStatusEl.classList.remove('error', 'active');
     }
     
@@ -501,6 +534,11 @@ function drawBoundingBoxes(data, isUpload = false) {
   
   // Clear previous boxes
   targetCtx.clearRect(0, 0, w, h);
+
+  // Re-draw detection region underneath overlays for live view
+  if (!isUpload) {
+    drawDetectionRegion(false);
+  }
   
   // Draw humans (blue boxes - person outline)
   if (data.humans && data.humans.length > 0) {
@@ -590,7 +628,7 @@ function displayDetectionResults(data, responseTime) {
     // No detections - show strict "no product detected" message
     resultsEl.innerHTML = `
       <div class="placeholder" style="background: #f5f5f5; border: 2px solid #9e9e9e; padding: 24px; border-radius: 8px; text-align: center;">
-        <p style="font-size: 1.5em; font-weight: 700; color: #424242; margin-bottom: 12px;">📭 no product detected</p>
+        <p style="font-size: 1.5em; font-weight: 700; color: #424242; margin-bottom: 12px;">📭 ${data.message || 'No matching product detected'}</p>
         <p class="small" style="color: #757575; line-height: 1.6;">
           • Ensure a catalog product is clearly visible<br>
           • Hold product centered in camera view<br>
@@ -641,7 +679,7 @@ function displayDetectionResults(data, responseTime) {
         </div>
         <div class="info-item">
           <span class="info-label">Price</span>
-          <span class="info-value">$${detection.price}</span>
+          <span class="info-value">₹${Number(detection.price).toLocaleString('en-IN')}</span>
         </div>
         <div class="info-item">
           <span class="info-label">Color</span>
@@ -851,42 +889,51 @@ async function loadZones() {
     if (data.success && data.zones) {
       productZones = data.zones;
       console.log(`✅ Loaded ${productZones.length} product zones`);
-      drawZones(); // Draw zones on canvas
+      // Zones retained for compatibility but single-box mode does not use them
     }
   } catch (err) {
     console.error('Failed to load zones:', err);
   }
 }
 
-// Draw zone overlays on canvas
-function drawZones() {
-  if (!canvas || !productZones.length) return;
-  
-  const ctx = canvas.getContext('2d');
+// Draw single detection region overlay
+function drawDetectionRegion(shouldClear = true) {
+  if (!overlayCanvas || !overlayCtx) return;
   const videoWidth = video.videoWidth || 640;
   const videoHeight = video.videoHeight || 480;
-  
-  // Scale zones to canvas size
-  const scaleX = canvas.width / videoWidth;
-  const scaleY = canvas.height / videoHeight;
-  
-  productZones.forEach(zone => {
-    const x = zone.x * scaleX;
-    const y = zone.y * scaleY;
-    const w = zone.width * scaleX;
-    const h = zone.height * scaleY;
-    
-    // Different color if zone is active
-    const isActive = activeZone && activeZone.productId === zone.productId;
-    ctx.strokeStyle = isActive ? '#00ff00' : '#888888';
-    ctx.lineWidth = isActive ? 3 : 2;
-    ctx.strokeRect(x, y, w, h);
-    
-    // Label
-    ctx.fillStyle = isActive ? '#00ff00' : '#ffffff';
-    ctx.font = '14px Arial';
-    ctx.fillText(zone.name || zone.productId, x + 5, y + 20);
-  });
+
+  overlayCanvas.width = videoWidth;
+  overlayCanvas.height = videoHeight;
+  overlayCanvas.style.width = video.offsetWidth + 'px';
+  overlayCanvas.style.height = video.offsetHeight + 'px';
+
+  if (shouldClear) {
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  }
+
+  const x = detectionRegion.x * videoWidth;
+  const y = detectionRegion.y * videoHeight;
+  const w = detectionRegion.width * videoWidth;
+  const h = detectionRegion.height * videoHeight;
+
+  overlayCtx.strokeStyle = '#f7a21e';
+  overlayCtx.lineWidth = 3;
+  overlayCtx.strokeRect(x, y, w, h);
+  overlayCtx.fillStyle = '#f7a21e';
+  overlayCtx.font = '14px Arial';
+  overlayCtx.fillText('Detection Area', x + 5, y + 20);
+}
+
+// Helper: pixel-space ROI for detection region
+function getDetectionRegionPixels() {
+  const videoWidth = video.videoWidth || 640;
+  const videoHeight = video.videoHeight || 480;
+  return {
+    x: detectionRegion.x * videoWidth,
+    y: detectionRegion.y * videoHeight,
+    width: detectionRegion.width * videoWidth,
+    height: detectionRegion.height * videoHeight
+  };
 }
 
 // Statistics
@@ -1080,7 +1127,8 @@ async function scanUploadedImage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             image: imageData,
-            source: 'upload'
+            source: 'upload',
+            expectedProductId: activeZone && activeZone.productId ? activeZone.productId : undefined
           })
         });
         
@@ -1162,13 +1210,13 @@ function displayUploadResults(result) {
     return;
   }
   
-  if (result.status === 'no_product_detected') {
-    console.log('ℹ️ No product detected in image');
+  if (result.status === 'no_product_detected' || result.status === 'error') {
+    console.log('ℹ️ No matching product detected in image');
     resultsEl.innerHTML = `
       <div class="no-match-state">
         <div class="no-match-icon">🔍</div>
-        <p class="no-match-title">No Product Detected</p>
-        <p class="no-match-subtitle">Could not identify a known product in this image</p>
+        <p class="no-match-title">${result.message || 'No matching product detected'}</p>
+        <p class="no-match-subtitle">Could not identify the expected product in this image</p>
         <div class="detection-tips">
           <p><strong>Tips:</strong></p>
           <ul>
@@ -1212,10 +1260,6 @@ function displayUploadResults(result) {
         </div>
       </div>
     `;
-    
-    // Update stats
-    detectionHistory.push(result.confidence);
-    updateStats();
     
     console.log('✅ Upload detection displayed successfully');
   } else {

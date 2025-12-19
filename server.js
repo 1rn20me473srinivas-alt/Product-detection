@@ -4,9 +4,15 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const Jimp = require('jimp');
+const OpenVINODetector = require('./openvino-detector');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const STUB_MODE = process.env.STUB_MODE === '1';
+
+// OpenVINO detector instance
+let ovDetector = null;
+let ovAvailable = false;
 
 // Middleware
 app.use(cors());
@@ -28,6 +34,25 @@ let productDB = [];
 const referenceSignatures = {}; // productId -> [{ path, ahash, hist }]
 // Product zones (ROIs) for person-gated detection
 let productZones = [];
+
+// Helper: bbox overlap ratio
+function computeOverlap(a, b) {
+  if (!a || !b) return 0;
+  const ax1 = a.x, ay1 = a.y, ax2 = a.x + a.width, ay2 = a.y + a.height;
+  const bx1 = b.x, by1 = b.y, bx2 = b.x + b.width, by2 = b.y + b.height;
+  const ix1 = Math.max(ax1, bx1);
+  const iy1 = Math.max(ay1, by1);
+  const ix2 = Math.min(ax2, bx2);
+  const iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  const aarea = a.width * a.height;
+  const barea = b.width * b.height;
+  const denom = Math.max(aarea + barea - inter, 1e-6);
+  // Use intersection over union
+  return inter / denom;
+}
 
 // Helpers for signatures
 function xorCount(a, b) {
@@ -52,6 +77,23 @@ async function computeAHashFromJimp(image) {
   let hash = '';
   for (const v of vals) hash += (v >= avg) ? '1' : '0';
   return hash; // 64-char string
+}
+
+// Synchronous version for OpenVINO integration
+function computeAHashSync(image) {
+  const small = image.clone().resize(8, 8).greyscale();
+  const data = small.bitmap.data;
+  let sum = 0;
+  const vals = [];
+  for (let i = 0; i < data.length; i += 4) {
+    const v = data[i];
+    vals.push(v);
+    sum += v;
+  }
+  const avg = sum / vals.length;
+  let hash = '';
+  for (const v of vals) hash += (v >= avg) ? '1' : '0';
+  return hash;
 }
 
 // pHash - More robust to lighting and minor angle changes
@@ -604,8 +646,10 @@ function detectCompartments(image) {
 
 async function loadReferenceSignatures() {
   // Build reference signatures from productDB references array or from references/<productId>/ folder
+  console.log('  Loading reference signatures...');
   for (const p of productDB) {
     const pid = p.id || p.name.replace(/\s+/g, '_').toLowerCase();
+    console.log(`  Processing product: ${pid}`);
     const refs = p.references && p.references.length ? p.references : [];
     const list = [];
     // if references empty, check folder
@@ -614,6 +658,7 @@ async function loadReferenceSignatures() {
       if (fs.existsSync(dir)) {
         const files = fs.readdirSync(dir).filter(f => /\.jpe?g|\.png$/i.test(f));
         for (const f of files) refs.push(path.join('references', pid, f));
+        console.log(`  Found ${files.length} reference images in folder`);
       }
     }
 
@@ -621,6 +666,7 @@ async function loadReferenceSignatures() {
       try {
         const refPath = path.isAbsolute(rel) ? rel : path.join(__dirname, rel);
         if (!fs.existsSync(refPath)) continue;
+        console.log(`    Loading ${path.basename(refPath)}...`);
         const img = await Jimp.read(refPath);
         const ahash = await computeAHashFromJimp(img);
         const phash = await computePHashFromJimp(img);
@@ -777,7 +823,7 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
     const image = await Jimp.read(filePath);
 
     // Resize for FAST processing - prioritize speed
-    const W = 300; // Reduced from 400 for faster detection
+    const W = 450; // Increased for better detail at distance
     const H = Jimp.AUTO;
     image.resize(W, H);
 
@@ -796,6 +842,138 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         confidence: Number(humanCheck.skinRatio.toFixed(3)),
         boundingBox: humanBox
       });
+    }
+
+    // Stub mode: if enabled and expected product is provided, short-circuit with a high-confidence match
+    if (STUB_MODE && options.expectedProductId) {
+      const stubProduct = productDB.find(p => p.id === options.expectedProductId);
+      if (stubProduct) {
+        console.log(`🧪 STUB MODE: forcing match to ${stubProduct.id}`);
+        return {
+          success: true,
+          filename,
+          timestamp: new Date().toISOString(),
+          humans,
+          detections: [
+            {
+              id: stubProduct.id,
+              type: stubProduct.name,
+              category: stubProduct.category,
+              confidence: 0.95,
+              price: stubProduct.price,
+              characteristics: stubProduct.characteristics,
+              shape: stubProduct.shape,
+              size: stubProduct.size,
+              color: stubProduct.color,
+              texture: stubProduct.texture,
+              packaging: stubProduct.packaging,
+              uniqueFeatures: stubProduct.uniqueFeatures,
+              location: stubProduct.location,
+              // Simple centered box to visualize detection
+              boundingBox: { x: 0.25, y: 0.2, width: 0.5, height: 0.6 }
+            }
+          ]
+        };
+      }
+    }
+
+    // Try OpenVINO detection first if available
+    if (ovAvailable && ovDetector) {
+      try {
+        console.log('🔍 Running OpenVINO object detection...');
+        const ovDetections = await ovDetector.detect(filePath);
+        
+        if (ovDetections && ovDetections.length > 0) {
+          console.log(`  OpenVINO detected ${ovDetections.length} objects`);
+          
+          // Filter for relevant objects (cell phone, bottle, etc.)
+          const relevantClasses = {
+            'cell phone': ['p5'], // Smartphone
+            'bottle': ['p4', 'p6'], // Water Bottle, Perfume
+            'backpack': ['p1'], // Could be yoga mat bag
+            'sports ball': ['p1'], // Possible yoga mat rolled up
+            'wine glass': ['p6'], // Perfume bottle shape
+            'cup': ['p4'] // Water bottle
+          };
+          
+          for (const det of ovDetections) {
+            const possibleProducts = relevantClasses[det.className] || [];
+            
+            if (possibleProducts.length > 0) {
+              console.log(`  → ${det.className} detected (${(det.confidence * 100).toFixed(1)}%), matching against: ${possibleProducts.join(', ')}`);
+              
+              // For each possible product, use reference matching to find best match
+              let bestMatch = null;
+              let bestScore = 0;
+              
+              for (const prodId of possibleProducts) {
+                const product = productDB.find(p => p.id === prodId);
+                if (!product) continue;
+                
+                // Use reference matching to verify
+                const refs = referenceSignatures[prodId] || [];
+                if (refs.length === 0) continue;
+                
+                const refScores = refs.map(ref => {
+                  const ahashSim = 1 - (xorCount(ref.ahash, computeAHashSync(image)) / ref.ahash.length);
+                  return ahashSim;
+                });
+                
+                const avgRefScore = refScores.reduce((a, b) => a + b, 0) / refScores.length;
+                const combinedScore = det.confidence * 0.4 + avgRefScore * 0.6;
+                
+                if (combinedScore > bestScore) {
+                  bestScore = combinedScore;
+                  bestMatch = product;
+                }
+              }
+              
+              if (bestMatch && bestScore >= 0.70) {
+                console.log(`✅ OpenVINO + Reference Match: ${bestMatch.name} (${(bestScore * 100).toFixed(1)}%)`);
+                
+                // Add detection with OpenVINO bounding box
+                detections.push({
+                  id: bestMatch.id,
+                  type: bestMatch.name,
+                  category: bestMatch.category,
+                  confidence: bestScore,
+                  price: bestMatch.price,
+                  characteristics: bestMatch.characteristics,
+                  shape: bestMatch.shape,
+                  size: bestMatch.size,
+                  color: bestMatch.color,
+                  texture: bestMatch.texture,
+                  packaging: bestMatch.packaging,
+                  uniqueFeatures: bestMatch.uniqueFeatures,
+                  location: bestMatch.location,
+                  boundingBox: {
+                    x: det.x / image.bitmap.width,
+                    y: det.y / image.bitmap.height,
+                    width: det.width / image.bitmap.width,
+                    height: det.height / image.bitmap.height
+                  },
+                  method: 'OpenVINO'
+                });
+              }
+            }
+          }
+          
+          // If OpenVINO found a match, return early
+          if (detections.length > 0) {
+            return {
+              success: true,
+              filename,
+              timestamp: new Date().toISOString(),
+              humans,
+              detections
+            };
+          }
+        }
+        
+        console.log('  OpenVINO: No relevant objects detected, falling back to heuristics');
+      } catch (err) {
+        console.warn('⚠️  OpenVINO detection failed, using heuristics:', err.message);
+      }
     }
 
     // Compute edge-like response using simple convolution (Sobel-ish)
@@ -1081,8 +1259,8 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         }
       }
 
-      // Combine refBestScore and heuristicScore - STRICT VALIDATION
-      // Reference matching helps with angles, but MUST NOT override clear heuristic mismatches
+      // Combine refBestScore and heuristicScore - VERY STRICT VALIDATION
+      // Reference matching is CRITICAL - without good reference match, reject detection
       let finalScore = 0;
       
       // CRITICAL: If semantic features strongly mismatch, reject even high ref scores
@@ -1091,25 +1269,32 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         (!p.detectableFeatures?.hasScreen && detectedFeatures.hasScreen)
       );
       
+      // NEW: Require minimum reference score to prevent random pattern matching
+      const MIN_REF_SCORE = 0.60; // Must have at least 60% reference similarity
+      
       if (hasStrongFeatureMismatch) {
         // Screen presence is a deal-breaker - reduce reference weight drastically
-        finalScore = 0.20 * refBestScore + 0.80 * heuristicScore;
+        finalScore = 0.15 * refBestScore + 0.85 * heuristicScore;
         console.log(`⚠️  ${p.id}: Screen mismatch! Ref=${refBestScore.toFixed(2)}, Heuristic=${heuristicScore.toFixed(2)}, Final=${finalScore.toFixed(2)}`);
+      } else if (refBestScore < MIN_REF_SCORE) {
+        // Reference too weak - likely random pattern/noise, heavily penalize
+        finalScore = 0.10 * refBestScore + 0.90 * heuristicScore;
+        if (finalScore > 0.50) {
+          console.log(`⚠️  ${p.id}: Weak reference (${(refBestScore*100).toFixed(1)}%) - likely false positive`);
+          finalScore *= 0.60; // Apply 40% penalty
+        }
       } else if (refBestScore > 0.85 && heuristicScore > 0.40) {
-        // Strong ref match AND reasonable heuristic - ACCURACY PRIORITY
-        finalScore = 0.80 * refBestScore + 0.20 * heuristicScore; // Trust reference images more
+        // Strong ref match AND reasonable heuristic - HIGHEST PRIORITY
+        finalScore = 0.85 * refBestScore + 0.15 * heuristicScore; // Trust reference images heavily
       } else if (refBestScore > 0.70 && heuristicScore > 0.30) {
-        // Good ref match with decent heuristic - balanced
-        finalScore = 0.65 * refBestScore + 0.35 * heuristicScore; // Favor references
-      } else if (refBestScore > 0.50) {
-        // Moderate ref match - balanced approach
-        finalScore = 0.50 * refBestScore + 0.50 * heuristicScore;
-      } else if (refBestScore > 0) {
-        // Weak ref match - heuristic dominates
-        finalScore = 0.30 * refBestScore + 0.70 * heuristicScore;
+        // Good ref match with decent heuristic - favor references
+        finalScore = 0.75 * refBestScore + 0.25 * heuristicScore;
+      } else if (refBestScore > MIN_REF_SCORE) {
+        // Moderate ref match - still favor references
+        finalScore = 0.65 * refBestScore + 0.35 * heuristicScore;
       } else {
-        // No refs - pure heuristic
-        finalScore = heuristicScore;
+        // Should not reach here due to MIN_REF_SCORE check above
+        finalScore = heuristicScore * 0.5; // Heavy penalty for no references
       }
 
       if (finalScore > bestScore) {
@@ -1132,10 +1317,11 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
       });
     }
 
-    // STRICT THRESHOLD: 80% confidence minimum (0.80)
-    // Only report product if clearly detected with high confidence
+    // Confidence threshold: 75% to prevent false positives
+    // Requires both good reference match AND reasonable heuristics
     const confidence = Math.min(0.99, bestScore);
     const bp = best?.product;
+    const expectedProductId = options.expectedProductId;
     
     // Sort diagnostics by score for logging
     diagnostics.sort((a, b) => b.finalScore - a.finalScore);
@@ -1146,13 +1332,30 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
       console.log(`  ${i+1}. ${d.name} (${d.id}): Final=${(d.finalScore*100).toFixed(1)}% [Heuristic=${(d.heuristicScore*100).toFixed(1)}% Ref=${(d.refBestScore*100).toFixed(1)}%]`);
       console.log(`     Shape=${(d.shapeMatch*100).toFixed(0)}% Features=${(d.featureMatch*100).toFixed(0)}% Size=${(d.sizeMatch*100).toFixed(0)}%`);
     });
-    console.log(`\n🎯 Best score: ${(bestScore*100).toFixed(1)}% (threshold: 70%)`);
+    console.log(`\n🎯 Best score: ${(bestScore*100).toFixed(1)}% (threshold: 75%)`);
+
+    // Ambiguity check: ensure margin between top-1 and top-2
+    const top1 = diagnostics[0]?.finalScore || 0;
+    const top2 = diagnostics[1]?.finalScore || 0;
+    const margin = top1 - top2;
+    const MIN_MARGIN = 0.08; // 8% required separation
     
+    // Shared response for any rejection scenario (low confidence, empty frame)
+    const noMatchResponse = {
+      success: true,
+      filename: filename,
+      timestamp: new Date().toISOString(),
+      humans: humans, // Still return person box even if no product detected
+      detections: [],
+      message: 'no product detected'
+    };
+
     // Reject if:
     // 1. No match found
-    // 2. Confidence below 80%
+    // 2. Confidence below 75%
     // 3. Very low edge detection (empty frame)
-    if (!best || confidence < 0.70 || edgeMean < 4) {
+    // 4. Ambiguous candidates (margin too small)
+    if (!best || confidence < 0.75 || edgeMean < 4 || margin < MIN_MARGIN) {
       const base = {
         success: true,
         filename: filename,
@@ -1163,21 +1366,54 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
       };
       if (options.debug) {
         base.diagnostics = {
-          reason: !best ? 'no match' : confidence < 0.80 ? 'low confidence' : 'empty frame',
+          reason: !best ? 'no match' : (confidence < 0.75 ? 'low confidence' : (margin < MIN_MARGIN ? 'ambiguous candidates' : 'empty frame')),
           bestScore: bestScore.toFixed(3),
           edgeMean: edgeMean.toFixed(2),
+          margin: Number(margin.toFixed(3)),
           topMatches: diagnostics.slice(0, 3)
         };
       }
-      const reason = !best ? 'no match' : confidence < 0.75 ? `low confidence (${(confidence*100).toFixed(1)}%)` : `low edges (${edgeMean.toFixed(1)})`;
+      const reason = !best ? 'no match' : (confidence < 0.75 ? `low confidence (${(confidence*100).toFixed(1)}%)` : (margin < MIN_MARGIN ? `ambiguous (margin ${(margin*100).toFixed(1)}%)` : `low edges (${edgeMean.toFixed(1)})`));
       console.log(`❌ No product detected: ${reason}`);
       return base;
     }
+
+    // Zone enforcement disabled for single-box mode
+    // Products are matched purely on confidence without zone restrictions
     
     console.log('✅ Detected:', bp.name, '- Confidence:', (confidence * 100).toFixed(1) + '%');
     
     // Calculate product bounding box (SEPARATE from person)
     const productBox = detectProductLocation(image, humanBox);
+
+    // Optional: If we detected a human, require product near hands region
+    // Skip this check if no human detected (e.g., reference images of products alone)
+    if (humanBox && productBox) {
+      // Define hands area as lower 30% of human bounding box
+      const handsArea = {
+        x: humanBox.x,
+        y: humanBox.y + (humanBox.height * 0.70),
+        width: humanBox.width,
+        height: humanBox.height * 0.30
+      };
+      const overlap = computeOverlap(productBox, handsArea);
+      const MIN_HAND_OVERLAP = 0.15; // at least 15% overlap
+      if (overlap < MIN_HAND_OVERLAP) {
+        console.log(`⚠️  Product not near hands (overlap ${(overlap*100).toFixed(1)}%), rejecting`);
+        return {
+          success: true,
+          filename: filename,
+          timestamp: new Date().toISOString(),
+          humans,
+          detections: [],
+          message: 'no product detected'
+        };
+      } else {
+        console.log(`✓ Product near hands (overlap ${(overlap*100).toFixed(1)}%)`);
+      }
+    } else if (!humanBox && productBox) {
+      console.log('ℹ No human detected, allowing product match (reference-only image)');
+    }
     
     const result = {
       success: true,
@@ -1258,6 +1494,9 @@ app.post('/api/detect', upload.single('image'), (req, res) => {
     return res.status(400).json({ success: false, error: 'No image provided' });
   }
 
+  // Optional zone gating: expected product for the active zone
+  const expectedProductId = req.body?.zoneProductId || req.body?.expectedProductId;
+
   console.log(`🔍 Received image: ${req.file.filename}`);
 
   // Simulate processing time
@@ -1266,7 +1505,7 @@ app.post('/api/detect', upload.single('image'), (req, res) => {
   (async () => {
     try {
       const debug = req.query && req.query.debug === '1';
-      const response = await analyzeImageAndDetect(req.file.path, req.file.filename, { debug });
+      const response = await analyzeImageAndDetect(req.file.path, req.file.filename, { debug, expectedProductId });
       if (response.detections && response.detections.length) {
         console.log(`✓ Detection result: ${response.detections[0].type} (${(response.detections[0].confidence * 100).toFixed(1)}%)`);
       } else {
@@ -1302,8 +1541,9 @@ app.post('/detect', express.json({ limit: '10mb' }), async (req, res) => {
     const tempPath = path.join('uploads', tempFilename);
     fs.writeFileSync(tempPath, buffer);
 
-    // Analyze the image
-    const response = await analyzeImageAndDetect(tempPath, tempFilename, { debug: false });
+    // Analyze the image (optional expected product for zone-based uploads)
+    const expectedProductId = req.body?.zoneProductId || req.body?.expectedProductId;
+    const response = await analyzeImageAndDetect(tempPath, tempFilename, { debug: false, expectedProductId });
 
     // Clean up temp file
     fs.unlinkSync(tempPath);
@@ -1333,7 +1573,7 @@ app.post('/detect', express.json({ limit: '10mb' }), async (req, res) => {
     } else {
       res.json({
         status: 'no_product_detected',
-        message: 'Could not identify any known product in the image'
+        message: response.message || 'No matching product detected'
       });
       console.log('⚠️ No product detected in uploaded image');
     }
@@ -1360,9 +1600,29 @@ app.use((err, req, res, next) => {
 // Server startup (ensure product catalog & reference signatures are loaded first)
 (async () => {
   try {
+    console.log('Starting server initialization...');
     loadProductCatalog();
+    console.log('Catalog loaded successfully');
     loadProductZones();
+    console.log('Zones loaded successfully');
     await loadReferenceSignatures();
+    console.log('Reference signatures loaded successfully');
+    
+    // Initialize OpenVINO detector
+    console.log('\n🔧 Initializing OpenVINO...');
+    try {
+      ovDetector = new OpenVINODetector(path.join(__dirname, 'models'));
+      ovAvailable = await ovDetector.initialize();
+      
+      if (!ovAvailable) {
+        console.log('⚠️  OpenVINO initialization failed, using heuristics only\n');
+      }
+    } catch (err) {
+      console.warn('⚠️  OpenVINO not available:', err.message);
+      console.log('   Continuing with heuristic detection only\n');
+      ovAvailable = false;
+    }
+    
     app.listen(PORT, () => {
       console.log(`
 ╔════════════════════════════════════════════════════╗
@@ -1371,9 +1631,14 @@ app.use((err, req, res, next) => {
 ║  📦 Open browser and navigate to root URL          ║
 ╚════════════════════════════════════════════════════╝
   `);
+      if (STUB_MODE) {
+        console.log('⚙️  STUB_MODE=ON (forcing expectedProductId matches when provided)');
+      }
+      console.log(`🤖 Detection: ${ovAvailable ? 'OpenVINO + Heuristic Fallback' : 'Heuristic Only'}\n`);
     });
   } catch (err) {
     console.error('Startup error:', err);
+    console.error('Stack:', err.stack);
     process.exit(1);
   }
 })();
