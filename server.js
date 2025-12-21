@@ -5,14 +5,20 @@ const path = require('path');
 const fs = require('fs');
 const Jimp = require('jimp');
 const OpenVINODetector = require('./openvino-detector');
+const FormData = require('form-data');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const STUB_MODE = process.env.STUB_MODE === '1';
+const FAISS_SERVICE_URL = process.env.FAISS_SERVICE_URL || 'http://127.0.0.1:8001';
 
 // OpenVINO detector instance
 let ovDetector = null;
 let ovAvailable = false;
+
+// FAISS service availability
+let faissAvailable = false;
 
 // Middleware
 app.use(cors());
@@ -812,6 +818,79 @@ function loadProductCatalog() {
   }
 }
 
+// FAISS similarity search
+async function searchFAISS(imagePath, topK = 5) {
+  if (!faissAvailable) {
+    return null;
+  }
+
+  try {
+    const form = new FormData();
+    form.append('image', fs.createReadStream(imagePath));
+    form.append('k', topK.toString());
+
+    const response = await new Promise((resolve, reject) => {
+      const req = http.request(
+        `${FAISS_SERVICE_URL}/search`,
+        {
+          method: 'POST',
+          headers: form.getHeaders(),
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      form.pipe(req);
+    });
+
+    if (response.success && response.matches && response.matches.length > 0) {
+      return response.matches;
+    }
+    return null;
+  } catch (err) {
+    console.warn('⚠️  FAISS search failed:', err.message);
+    return null;
+  }
+}
+
+// Check FAISS service availability
+async function checkFAISSService() {
+  try {
+    const response = await new Promise((resolve, reject) => {
+      http.get(`${FAISS_SERVICE_URL}/health`, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }).on('error', reject);
+    });
+    
+    if (response.status === 'ok') {
+      faissAvailable = true;
+      console.log(`✅ FAISS service connected (${response.index_size} vectors, ${response.products} products)`);
+      return true;
+    }
+  } catch (err) {
+    faissAvailable = false;
+  }
+  return false;
+}
+
+
 // Generate mock inference response
 /**
  * Analyze image and attempt to match a product from the catalog.
@@ -973,6 +1052,116 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
         console.log('  OpenVINO: No relevant objects detected, falling back to heuristics');
       } catch (err) {
         console.warn('⚠️  OpenVINO detection failed, using heuristics:', err.message);
+      }
+    }
+
+    // Try FAISS similarity search if available
+    if (faissAvailable) {
+      try {
+        console.log('🔍 Running FAISS similarity search...');
+        const faissMatches = await searchFAISS(filePath, 5);
+        
+        if (faissMatches && faissMatches.length > 0) {
+          console.log(`  FAISS found ${faissMatches.length} similar products`);
+          
+          // Get top match
+          const topMatch = faissMatches[0];
+          const similarity = topMatch.similarity;
+          const MIN_FAISS_SIMILARITY = 0.60; // Tune this threshold
+          const MIN_MARGIN = 0.08;
+          
+          // Calculate margin between top-1 and top-2
+          let margin = 1.0;
+          if (faissMatches.length > 1) {
+            margin = topMatch.similarity - faissMatches[1].similarity;
+          }
+          
+          console.log(`  Top match: ${topMatch.product_name} (similarity: ${(similarity * 100).toFixed(1)}%, margin: ${(margin * 100).toFixed(1)}%)`);
+          
+          if (similarity >= MIN_FAISS_SIMILARITY && margin >= MIN_MARGIN) {
+            const product = productDB.find(p => p.id === topMatch.product_id);
+            
+            if (product) {
+              console.log(`✅ FAISS Match: ${product.name} (${(similarity * 100).toFixed(1)}%)`);
+              
+              const productBox = detectProductLocation(image, humanBox);
+              
+              // Apply hand proximity gating if human detected
+              if (humanBox && productBox) {
+                const handsArea = {
+                  x: humanBox.x,
+                  y: humanBox.y + (humanBox.height * 0.70),
+                  width: humanBox.width,
+                  height: humanBox.height * 0.30
+                };
+                const overlap = computeOverlap(productBox, handsArea);
+                const MIN_HAND_OVERLAP = 0.15;
+                
+                if (overlap < MIN_HAND_OVERLAP) {
+                  console.log(`⚠️  Product not near hands (overlap ${(overlap * 100).toFixed(1)}%), continuing to heuristics`);
+                } else {
+                  console.log(`✓ Product near hands (overlap ${(overlap * 100).toFixed(1)}%)`);
+                  
+                  return {
+                    success: true,
+                    filename,
+                    timestamp: new Date().toISOString(),
+                    humans,
+                    detections: [{
+                      id: product.id,
+                      type: product.name,
+                      category: product.category,
+                      confidence: similarity,
+                      price: product.price,
+                      characteristics: product.characteristics,
+                      shape: product.shape,
+                      size: product.size,
+                      color: product.color,
+                      texture: product.texture,
+                      packaging: product.packaging,
+                      uniqueFeatures: product.uniqueFeatures,
+                      location: product.location,
+                      boundingBox: productBox,
+                      method: 'FAISS'
+                    }]
+                  };
+                }
+              } else if (!humanBox && productBox) {
+                console.log('ℹ No human detected, allowing FAISS match');
+                
+                return {
+                  success: true,
+                  filename,
+                  timestamp: new Date().toISOString(),
+                  humans,
+                  detections: [{
+                    id: product.id,
+                    type: product.name,
+                    category: product.category,
+                    confidence: similarity,
+                    price: product.price,
+                    characteristics: product.characteristics,
+                    shape: product.shape,
+                    size: product.size,
+                    color: product.color,
+                    texture: product.texture,
+                    packaging: product.packaging,
+                    uniqueFeatures: product.uniqueFeatures,
+                    location: product.location,
+                    boundingBox: productBox,
+                    method: 'FAISS'
+                  }]
+                };
+              }
+            }
+          } else {
+            console.log(`  FAISS: Low similarity or ambiguous (similarity: ${(similarity * 100).toFixed(1)}%, margin: ${(margin * 100).toFixed(1)}%)`);
+          }
+        }
+        
+        console.log('  FAISS: No confident match, falling back to heuristics');
+      } catch (err) {
+        console.warn('⚠️  FAISS search failed, using heuristics:', err.message);
       }
     }
 
@@ -1326,11 +1515,10 @@ async function analyzeImageAndDetect(filePath, filename, options = {}) {
     // Sort diagnostics by score for logging
     diagnostics.sort((a, b) => b.finalScore - a.finalScore);
     
-    // Always log top 3 candidates for debugging
-    console.log('\n🏆 Top 3 Detection Candidates:');
-    diagnostics.slice(0, 3).forEach((d, i) => {
+    // Log ALL products for complete visibility
+    console.log(`\n🏆 All ${diagnostics.length} Products Ranked:`);
+    diagnostics.forEach((d, i) => {
       console.log(`  ${i+1}. ${d.name} (${d.id}): Final=${(d.finalScore*100).toFixed(1)}% [Heuristic=${(d.heuristicScore*100).toFixed(1)}% Ref=${(d.refBestScore*100).toFixed(1)}%]`);
-      console.log(`     Shape=${(d.shapeMatch*100).toFixed(0)}% Features=${(d.featureMatch*100).toFixed(0)}% Size=${(d.sizeMatch*100).toFixed(0)}%`);
     });
     console.log(`\n🎯 Best score: ${(bestScore*100).toFixed(1)}% (threshold: 75%)`);
 
@@ -1623,6 +1811,13 @@ app.use((err, req, res, next) => {
       ovAvailable = false;
     }
     
+    // Check FAISS service availability
+    console.log('🔧 Checking FAISS service...');
+    await checkFAISSService();
+    if (!faissAvailable) {
+      console.log('⚠️  FAISS service not available, using OpenVINO/heuristics only\n');
+    }
+    
     app.listen(PORT, () => {
       console.log(`
 ╔════════════════════════════════════════════════════╗
@@ -1634,7 +1829,13 @@ app.use((err, req, res, next) => {
       if (STUB_MODE) {
         console.log('⚙️  STUB_MODE=ON (forcing expectedProductId matches when provided)');
       }
-      console.log(`🤖 Detection: ${ovAvailable ? 'OpenVINO + Heuristic Fallback' : 'Heuristic Only'}\n`);
+      
+      // Detection method summary
+      const methods = [];
+      if (faissAvailable) methods.push('FAISS');
+      if (ovAvailable) methods.push('OpenVINO');
+      methods.push('Heuristics');
+      console.log(`🤖 Detection: ${methods.join(' → ')}\n`);
     });
   } catch (err) {
     console.error('Startup error:', err);
